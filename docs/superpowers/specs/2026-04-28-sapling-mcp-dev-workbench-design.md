@@ -49,6 +49,7 @@ Two services in a single `docker-compose.yml`:
 ```
 
 **Key decisions:**
+
 - Single Node process. One user, local box, no clustering.
 - Migrations applied on server startup. Idempotent. Tracked in `_migrations` table.
 - HTTP/SSE bound to `127.0.0.1:3333` so it's not network-reachable.
@@ -56,6 +57,7 @@ Two services in a single `docker-compose.yml`:
 - Postgres data persisted to `./data/postgres` (gitignored).
 
 **Repo layout:**
+
 ```
 sapling/
   docker-compose.yml
@@ -90,6 +92,7 @@ sapling/
 ```
 
 **Claude Code config (added to `~/.claude.json` or project `.mcp.json`):**
+
 ```json
 {
   "mcpServers": {
@@ -196,6 +199,7 @@ CREATE TABLE _migrations (
 ```
 
 **Schema notes:**
+
 - `tech_stack` and `depends_on` are `TEXT[]`. Lean for v1; can promote to a join table later.
 - All FKs use `ON DELETE SET NULL` except `services.app_id`, which cascades — deleting a plan must not nuke its work history.
 - `work_pending_idx` is a partial index — keeps the claim query O(log N) regardless of completed-task volume.
@@ -207,45 +211,46 @@ CREATE TABLE _migrations (
 
 **Products:**
 
-| Tool | Purpose |
-|------|---------|
-| `list_apps()` | All apps. |
-| `list_services(app_name?)` | Services, optionally filtered to one app. |
-| `get_service(id_or_name)` | Full detail incl. tech_stack, depends_on, conventions. |
-| `register_app(name, description?)` | Create app. |
-| `register_service(app_name, name, repo_url?, description?, tech_stack?, depends_on?, conventions?)` | Create service. |
-| `update_service(id, ...partial)` | Patch any field. |
+| Tool                                                                                                | Purpose                                                |
+| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `list_apps()`                                                                                       | All apps.                                              |
+| `list_services(app_name?)`                                                                          | Services, optionally filtered to one app.              |
+| `get_service(id_or_name)`                                                                           | Full detail incl. tech_stack, depends_on, conventions. |
+| `register_app(name, description?)`                                                                  | Create app.                                            |
+| `register_service(app_name, name, repo_url?, description?, tech_stack?, depends_on?, conventions?)` | Create service.                                        |
+| `update_service(id, ...partial)`                                                                    | Patch any field.                                       |
 
 **Plans:**
 
-| Tool | Purpose |
-|------|---------|
-| `create_plan(title, body_markdown, service_id?, parent_plan_id?, status='draft')` | Store a plan. |
-| `get_plan(id)` | Fetch with body. |
-| `list_plans(service_id?, status?)` | Filtered list (titles only, no bodies). |
-| `update_plan(id, ...partial)` | Patch title/body/status/links. |
+| Tool                                                                              | Purpose                                 |
+| --------------------------------------------------------------------------------- | --------------------------------------- |
+| `create_plan(title, body_markdown, service_id?, parent_plan_id?, status='draft')` | Store a plan.                           |
+| `get_plan(id)`                                                                    | Fetch with body.                        |
+| `list_plans(service_id?, status?)`                                                | Filtered list (titles only, no bodies). |
+| `update_plan(id, ...partial)`                                                     | Patch title/body/status/links.          |
 
 **Work queue:**
 
-| Tool | Purpose |
-|------|---------|
-| `enqueue_work(type, title, description_markdown, priority?, service_id?, plan_id?, branch?, pr_url?)` | Add a task. Type ∈ {plan, code, review}. |
-| `claim_next_work(claimed_by, types?, service_id?)` | **Atomic.** Returns next pending item matching filters, marks it `claimed`. Returns `null` if none. |
-| `get_work(id)` | Fetch one. |
-| `list_work(status?, type?, service_id?, plan_id?)` | Filtered list. |
-| `complete_work(id, summary_markdown?, artifact_id?)` | Mark completed; optional summary stored as artifact, or link an existing artifact. |
-| `fail_work(id, reason)` | Set status to `failed` and store reason. Failed items are not auto-retried; retry is a fresh `enqueue_work` call. |
-| `cancel_work(id, reason?)` | Soft delete equivalent. |
+| Tool                                                                                                  | Purpose                                                                                                           |
+| ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `enqueue_work(type, title, description_markdown, priority?, service_id?, plan_id?, branch?, pr_url?)` | Add a task. Type ∈ {plan, code, review}.                                                                          |
+| `claim_next_work(claimed_by, types?, service_id?)`                                                    | **Atomic.** Returns next pending item matching filters, marks it `claimed`. Returns `null` if none.               |
+| `get_work(id)`                                                                                        | Fetch one.                                                                                                        |
+| `list_work(status?, type?, service_id?, plan_id?)`                                                    | Filtered list.                                                                                                    |
+| `complete_work(id, summary_markdown?, artifact_id?)`                                                  | Mark completed; optional summary stored as artifact, or link an existing artifact.                                |
+| `fail_work(id, reason)`                                                                               | Set status to `failed` and store reason. Failed items are not auto-retried; retry is a fresh `enqueue_work` call. |
+| `cancel_work(id, reason?)`                                                                            | Soft delete equivalent.                                                                                           |
 
 **Artifacts:**
 
-| Tool | Purpose |
-|------|---------|
+| Tool                                                                                | Purpose                                       |
+| ----------------------------------------------------------------------------------- | --------------------------------------------- |
 | `attach_artifact(kind, title, body_markdown, work_item_id?, plan_id?, service_id?)` | Store a markdown artifact, optionally linked. |
-| `get_artifact(id)` | Fetch with body. |
-| `list_artifacts(work_item_id?, plan_id?, service_id?, kind?)` | Filtered list (titles only). |
+| `get_artifact(id)`                                                                  | Fetch with body.                              |
+| `list_artifacts(work_item_id?, plan_id?, service_id?, kind?)`                       | Filtered list (titles only).                  |
 
 **Implementation note for `claim_next_work`:**
+
 ```sql
 WITH next AS (
   SELECT id FROM work_items
@@ -267,15 +272,16 @@ RETURNING w.*;
 
 Shipped in the same repo under `packages/claude-plugin/.claude/skills/`. Each is a thin skill that invokes one or more MCP tools.
 
-| Command | Wraps | Purpose |
-|---|---|---|
-| `/sapling:work` | `claim_next_work` then loop into the appropriate type-specific flow | Pull next pending task and execute it in the current session |
-| `/sapling:plan <desc>` | `enqueue_work(type='plan', ...)` | Drop a planning task into the queue |
-| `/sapling:enqueue <code\|review> <desc>` | `enqueue_work(...)` | Drop a code or review task |
-| `/sapling:status` | `list_work(status='pending')` + counts by status | Show queue health |
-| `/sapling:context <service>` | `get_service` + `list_plans(service_id)` + recent artifacts | Load full context for a service into the conversation |
+| Command                                  | Wraps                                                               | Purpose                                                      |
+| ---------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `/sapling:work`                          | `claim_next_work` then loop into the appropriate type-specific flow | Pull next pending task and execute it in the current session |
+| `/sapling:plan <desc>`                   | `enqueue_work(type='plan', ...)`                                    | Drop a planning task into the queue                          |
+| `/sapling:enqueue <code\|review> <desc>` | `enqueue_work(...)`                                                 | Drop a code or review task                                   |
+| `/sapling:status`                        | `list_work(status='pending')` + counts by status                    | Show queue health                                            |
+| `/sapling:context <service>`             | `get_service` + `list_plans(service_id)` + recent artifacts         | Load full context for a service into the conversation        |
 
 **Canonical `/sapling:work` flow:**
+
 ```
 1. claim_next_work(claimed_by='claude-<host>')   ->  work_item or null
 2. If plan task:
@@ -323,6 +329,7 @@ Shipped in the same repo under `packages/claude-plugin/.claude/skills/`. Each is
 ## Migrations
 
 On server startup:
+
 1. Connect to DB, ensure `_migrations` table exists.
 2. Scan `src/schema/*.sql` lexicographically.
 3. For each file not in `_migrations`: run inside a transaction, then insert into `_migrations`.

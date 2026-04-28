@@ -7,6 +7,7 @@
 **Architecture:** A thin Node.js MCP server exposes 20 tools over Streamable HTTP, talking to Postgres directly via the `pg` driver. A separate Claude Code plugin under `packages/claude-plugin/` wraps the most common tool flows as slash commands. Two docker-compose services (`postgres`, `mcp-server`); single Node process; migrations applied on startup. The current Claude session pulls work via `claim_next_work` and executes it locally — Sapling stores knowledge and tracks the queue but does not run agents.
 
 **Tech Stack:**
+
 - Node.js 22 LTS + TypeScript 5.x
 - pnpm workspaces (monorepo: `packages/mcp-server`, `packages/claude-plugin`)
 - `@modelcontextprotocol/server`, `@modelcontextprotocol/node`, `@modelcontextprotocol/express` (MCP SDK; Streamable HTTP transport)
@@ -86,6 +87,7 @@ sapling/
 ```
 
 **Responsibility map (one file = one job):**
+
 - `config.ts` — read env, validate, export typed config object.
 - `db.ts` — single `pg.Pool`, `withTx<T>(fn)` helper.
 - `migrate.ts` — apply `*.sql` files in order against `_migrations` ledger.
@@ -97,6 +99,7 @@ sapling/
 ---
 
 ## Conventions for every task
+
 - **Branching:** none — work directly on `main` for v1 (greenfield repo, single user).
 - **Before each commit:** run `pnpm prettier --write .` and `pnpm lint --fix`. Both are wired in Task 1.
 - **Test runner:** `pnpm --filter mcp-server test`. Runs unit, then integration (skips integration if Docker unavailable — see Task 3).
@@ -109,6 +112,7 @@ sapling/
 ### Task 1: Initialize monorepo root
 
 **Files:**
+
 - Create: `package.json`
 - Create: `pnpm-workspace.yaml`
 - Create: `.gitignore`
@@ -121,7 +125,7 @@ sapling/
 
 ```yaml
 packages:
-  - "packages/*"
+  - 'packages/*'
 ```
 
 - [ ] **Step 2: Create root `package.json`**
@@ -233,6 +237,7 @@ git commit -m "chore: initialize pnpm workspace, lint/format, env example"
 ### Task 2: docker-compose with Postgres only (no mcp-server yet)
 
 **Files:**
+
 - Create: `docker-compose.yml`
 
 We bring Postgres up first so the next task's tests can use a local container if `testcontainers` is unavailable.
@@ -249,11 +254,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme-locally}
       POSTGRES_DB: ${POSTGRES_DB:-sapling}
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sapling}"]
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-sapling}']
       interval: 2s
       timeout: 5s
       retries: 10
@@ -283,6 +288,7 @@ git commit -m "chore: add postgres service to docker-compose"
 ### Task 3: Initialize `packages/mcp-server` package
 
 **Files:**
+
 - Create: `packages/mcp-server/package.json`
 - Create: `packages/mcp-server/tsconfig.json`
 - Create: `packages/mcp-server/vitest.config.ts`
@@ -402,6 +408,7 @@ git commit -m "feat(mcp-server): scaffold typescript package with vitest and tsc
 ### Task 4: Write `001_init.sql` (verbatim schema from spec)
 
 **Files:**
+
 - Create: `packages/mcp-server/src/schema/001_init.sql`
 
 - [ ] **Step 1: Create the SQL file**
@@ -492,15 +499,18 @@ CREATE INDEX artifacts_plan_idx ON artifacts(plan_id);
 - [ ] **Step 2: Verify SQL is syntactically valid by applying to a throwaway DB**
 
 Run:
+
 ```bash
 docker compose up -d postgres
 docker compose exec -T postgres psql -U sapling -d sapling \
   -v ON_ERROR_STOP=1 -f - < packages/mcp-server/src/schema/001_init.sql
 docker compose exec postgres psql -U sapling -d sapling -c "\dt"
 ```
+
 Expected: lists 4 tables (`apps`, `artifacts`, `plans`, `services`, `work_items`). No errors.
 
 Reset for next task:
+
 ```bash
 docker compose down -v
 rm -rf data/postgres
@@ -518,6 +528,7 @@ git commit -m "feat(schema): add initial schema (apps, services, plans, work_ite
 ### Task 5: TDD `migrate.ts` (apply once, idempotent on second run)
 
 **Files:**
+
 - Create: `packages/mcp-server/test/helpers/pg.ts`
 - Create: `packages/mcp-server/test/integration/migrate.test.ts`
 - Create: `packages/mcp-server/src/db.ts`
@@ -526,6 +537,7 @@ git commit -m "feat(schema): add initial schema (apps, services, plans, work_ite
 - [ ] **Step 1: Create test helper for ephemeral Postgres**
 
 `packages/mcp-server/test/helpers/pg.ts`:
+
 ```ts
 import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
@@ -568,6 +580,7 @@ Then run: `pnpm install`.
 - [ ] **Step 2: Write the failing test**
 
 `packages/mcp-server/test/integration/migrate.test.ts`:
+
 ```ts
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runMigrations } from '../../src/migrate.js';
@@ -611,6 +624,7 @@ Expected: FAIL — `Cannot find module '../../src/migrate.js'` or similar.
 - [ ] **Step 4: Implement `db.ts`**
 
 `packages/mcp-server/src/db.ts`:
+
 ```ts
 import pg from 'pg';
 
@@ -639,6 +653,7 @@ export async function withTx<T>(pool: Db, fn: (client: pg.PoolClient) => Promise
 - [ ] **Step 5: Implement `migrate.ts`**
 
 `packages/mcp-server/src/migrate.ts`:
+
 ```ts
 import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -689,6 +704,7 @@ git commit -m "feat(mcp-server): add startup migrator and pg pool helper"
 ### Task 6: `config.ts` (env parsing) and `logger.ts`
 
 **Files:**
+
 - Create: `packages/mcp-server/src/config.ts`
 - Create: `packages/mcp-server/src/logger.ts`
 
@@ -697,6 +713,7 @@ These are tiny — no dedicated test files, but they must compile cleanly.
 - [ ] **Step 1: Implement `config.ts`**
 
 `packages/mcp-server/src/config.ts`:
+
 ```ts
 import { z } from 'zod';
 
@@ -726,6 +743,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 - [ ] **Step 2: Implement `logger.ts`**
 
 `packages/mcp-server/src/logger.ts`:
+
 ```ts
 import pino, { type Logger } from 'pino';
 
@@ -758,12 +776,14 @@ git commit -m "feat(mcp-server): add config loader and pino logger factory"
 ### Task 7: `errors.ts` (error codes + tool-result mapping)
 
 **Files:**
+
 - Create: `packages/mcp-server/src/errors.ts`
 - Create: `packages/mcp-server/test/unit/errors.test.ts`
 
 - [ ] **Step 1: Write the failing test**
 
 `packages/mcp-server/test/unit/errors.test.ts`:
+
 ```ts
 import { describe, expect, it } from 'vitest';
 import { AppError, errorToToolResult, mapPgError } from '../../src/errors.js';
@@ -804,15 +824,11 @@ Expected: FAIL — module not found.
 - [ ] **Step 3: Implement `errors.ts`**
 
 `packages/mcp-server/src/errors.ts`:
+
 ```ts
 import type { CallToolResult } from '@modelcontextprotocol/server';
 
-export type ErrorCode =
-  | 'invalid_input'
-  | 'not_found'
-  | 'conflict'
-  | 'claim_race'
-  | 'internal';
+export type ErrorCode = 'invalid_input' | 'not_found' | 'conflict' | 'claim_race' | 'internal';
 
 export class AppError extends Error {
   constructor(
@@ -870,6 +886,7 @@ git commit -m "feat(mcp-server): add AppError, pg error mapping, tool-result ser
 ### Task 8: HTTP server + MCP transport + `/health` (TDD)
 
 **Files:**
+
 - Create: `packages/mcp-server/src/server.ts`
 - Modify: `packages/mcp-server/src/index.ts`
 - Create: `packages/mcp-server/test/integration/health.test.ts`
@@ -877,6 +894,7 @@ git commit -m "feat(mcp-server): add AppError, pg error mapping, tool-result ser
 - [ ] **Step 1: Write the failing test**
 
 `packages/mcp-server/test/integration/health.test.ts`:
+
 ```ts
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
@@ -923,6 +941,7 @@ Expected: FAIL — module not found.
 - [ ] **Step 3: Implement `server.ts`**
 
 `packages/mcp-server/src/server.ts`:
+
 ```ts
 import { randomUUID } from 'node:crypto';
 import cors from 'cors';
@@ -970,7 +989,9 @@ export function createApp({ db, token }: CreateAppDeps): CreateAppResult {
     const header = req.header('authorization') ?? '';
     const expected = `Bearer ${token}`;
     if (header !== expected) {
-      return res.status(401).json({ error: { code: 'unauthorized', message: 'missing or invalid token' } });
+      return res
+        .status(401)
+        .json({ error: { code: 'unauthorized', message: 'missing or invalid token' } });
     }
     next();
   });
@@ -999,7 +1020,9 @@ export function createApp({ db, token }: CreateAppDeps): CreateAppResult {
       return;
     }
 
-    res.status(400).json({ error: { code: 'invalid_request', message: 'missing session for non-initialize request' } });
+    res.status(400).json({
+      error: { code: 'invalid_request', message: 'missing session for non-initialize request' },
+    });
   });
 
   return { app, mcp };
@@ -1009,6 +1032,7 @@ export function createApp({ db, token }: CreateAppDeps): CreateAppResult {
 - [ ] **Step 4: Stub `tools/register.ts` so `server.ts` imports cleanly**
 
 Create `packages/mcp-server/src/tools/register.ts`:
+
 ```ts
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { Db } from '../db.js';
@@ -1021,6 +1045,7 @@ export function registerAllTools(_server: McpServer, _db: Db): void {
 - [ ] **Step 5: Wire `index.ts` bootstrap**
 
 `packages/mcp-server/src/index.ts`:
+
 ```ts
 import { loadConfig } from './config.js';
 import { createPool } from './db.js';
@@ -1068,6 +1093,7 @@ git commit -m "feat(mcp-server): wire express + streamable HTTP transport, /heal
 ### Task 9: `register_app` and `list_apps` (TDD)
 
 **Files:**
+
 - Create: `packages/mcp-server/test/helpers/mcp-client.ts`
 - Create: `packages/mcp-server/test/integration/products.test.ts`
 - Create: `packages/mcp-server/src/tools/products.ts`
@@ -1078,6 +1104,7 @@ git commit -m "feat(mcp-server): wire express + streamable HTTP transport, /heal
 The integration tests will create an MCP server in memory and call tools through the SDK without going through HTTP. This keeps tests fast and focused on tool behavior.
 
 `packages/mcp-server/test/helpers/mcp-client.ts`:
+
 ```ts
 import { Client } from '@modelcontextprotocol/server';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
@@ -1085,7 +1112,10 @@ import type { McpServer } from '@modelcontextprotocol/server';
 
 export interface TestClient {
   call: (name: string, args?: Record<string, unknown>) => Promise<unknown>;
-  callRaw: (name: string, args?: Record<string, unknown>) => Promise<{ isError?: boolean; content: Array<{ type: string; text: string }> }>;
+  callRaw: (
+    name: string,
+    args?: Record<string, unknown>,
+  ) => Promise<{ isError?: boolean; content: Array<{ type: string; text: string }> }>;
   close: () => Promise<void>;
 }
 
@@ -1120,6 +1150,7 @@ export async function connectInMemory(server: McpServer): Promise<TestClient> {
 - [ ] **Step 2: Write the failing test**
 
 `packages/mcp-server/test/integration/products.test.ts`:
+
 ```ts
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/server';
@@ -1179,6 +1210,7 @@ Expected: FAIL — `Tool register_app not found` or similar.
 - [ ] **Step 4: Implement `tools/products.ts` (apps portion only for now)**
 
 `packages/mcp-server/src/tools/products.ts`:
+
 ```ts
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
@@ -1231,6 +1263,7 @@ export function registerProducts(server: McpServer, db: Db): void {
 - [ ] **Step 5: Wire into `register.ts`**
 
 `packages/mcp-server/src/tools/register.ts`:
+
 ```ts
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { Db } from '../db.js';
@@ -1259,12 +1292,14 @@ git commit -m "feat(tools): register_app and list_apps with conflict mapping"
 ### Task 10: Service tools (`register_service`, `list_services`, `get_service`, `update_service`)
 
 **Files:**
+
 - Modify: `packages/mcp-server/src/tools/products.ts`
 - Modify: `packages/mcp-server/test/integration/products.test.ts`
 
 - [ ] **Step 1: Add failing tests for services to the same file**
 
 Append to `products.test.ts`:
+
 ```ts
 describe('services tools', () => {
   let db: TestDb;
@@ -1316,7 +1351,10 @@ describe('services tools', () => {
   });
 
   it('get_service accepts id or {app, name}', async () => {
-    const created = await client.call('register_service', { app_name: 'checkout', name: 'api' }) as { id: number };
+    const created = (await client.call('register_service', {
+      app_name: 'checkout',
+      name: 'api',
+    })) as { id: number };
     const byId = await client.call('get_service', { id: created.id });
     expect(byId).toMatchObject({ name: 'api' });
     const byName = await client.call('get_service', { app_name: 'checkout', name: 'api' });
@@ -1331,11 +1369,11 @@ describe('services tools', () => {
   });
 
   it('update_service patches provided fields and leaves others alone', async () => {
-    const created = await client.call('register_service', {
+    const created = (await client.call('register_service', {
       app_name: 'checkout',
       name: 'api',
       tech_stack: ['typescript'],
-    }) as { id: number };
+    })) as { id: number };
     const updated = await client.call('update_service', {
       id: created.id,
       description: 'now with desc',
@@ -1359,6 +1397,7 @@ Expected: FAIL on each new `it`.
 - [ ] **Step 3: Implement service tools in `products.ts`**
 
 Append to `packages/mcp-server/src/tools/products.ts`:
+
 ```ts
 const ServiceLookup = z
   .object({
@@ -1366,10 +1405,9 @@ const ServiceLookup = z
     app_name: z.string().optional(),
     name: z.string().optional(),
   })
-  .refine(
-    (v) => v.id !== undefined || (v.app_name !== undefined && v.name !== undefined),
-    { message: 'must provide id, or both app_name and name' },
-  );
+  .refine((v) => v.id !== undefined || (v.app_name !== undefined && v.name !== undefined), {
+    message: 'must provide id, or both app_name and name',
+  });
 
 export function registerServiceTools(server: McpServer, db: Db): void {
   server.registerTool(
@@ -1388,7 +1426,9 @@ export function registerServiceTools(server: McpServer, db: Db): void {
     },
     async (input) => {
       try {
-        const app = await db.query<{ id: number }>(`SELECT id FROM apps WHERE name = $1`, [input.app_name]);
+        const app = await db.query<{ id: number }>(`SELECT id FROM apps WHERE name = $1`, [
+          input.app_name,
+        ]);
         if (app.rowCount === 0) {
           return errorToToolResult(new AppError('not_found', `app ${input.app_name} not found`));
         }
@@ -1489,7 +1529,8 @@ export function registerServiceTools(server: McpServer, db: Db): void {
           `UPDATE services SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
           values,
         );
-        if (rows.length === 0) return errorToToolResult(new AppError('not_found', `service ${id} not found`));
+        if (rows.length === 0)
+          return errorToToolResult(new AppError('not_found', `service ${id} not found`));
         return ok(rows[0]);
       } catch (err) {
         return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
@@ -1502,6 +1543,7 @@ export function registerServiceTools(server: McpServer, db: Db): void {
 - [ ] **Step 4: Wire into `register.ts`**
 
 Update `packages/mcp-server/src/tools/register.ts`:
+
 ```ts
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { Db } from '../db.js';
@@ -1533,6 +1575,7 @@ git commit -m "feat(tools): register_service, list_services, get_service, update
 ### Task 11: `create_plan`, `get_plan`, `list_plans`, `update_plan` (TDD)
 
 **Files:**
+
 - Create: `packages/mcp-server/test/integration/plans.test.ts`
 - Create: `packages/mcp-server/src/tools/plans.ts`
 - Modify: `packages/mcp-server/src/tools/register.ts`
@@ -1540,6 +1583,7 @@ git commit -m "feat(tools): register_service, list_services, get_service, update
 - [ ] **Step 1: Write failing tests**
 
 `packages/mcp-server/test/integration/plans.test.ts`:
+
 ```ts
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/server';
@@ -1570,25 +1614,35 @@ describe('plans tools', () => {
   });
 
   it('create_plan stores title, body, default status=draft', async () => {
-    const plan = await client.call('create_plan', { title: 'Add OAuth', body_markdown: '# Goal\nAdd OAuth' });
+    const plan = await client.call('create_plan', {
+      title: 'Add OAuth',
+      body_markdown: '# Goal\nAdd OAuth',
+    });
     expect(plan).toMatchObject({ id: 1, title: 'Add OAuth', status: 'draft' });
   });
 
   it('get_plan returns the full body', async () => {
-    const created = await client.call('create_plan', {
+    const created = (await client.call('create_plan', {
       title: 'A',
       body_markdown: 'long body here',
-    }) as { id: number };
-    const fetched = await client.call('get_plan', { id: created.id }) as { body_markdown: string };
+    })) as { id: number };
+    const fetched = (await client.call('get_plan', { id: created.id })) as {
+      body_markdown: string;
+    };
     expect(fetched.body_markdown).toBe('long body here');
   });
 
   it('list_plans omits body and supports status filter', async () => {
-    const a = await client.call('create_plan', { title: 'a', body_markdown: 'x' }) as { id: number };
+    const a = (await client.call('create_plan', { title: 'a', body_markdown: 'x' })) as {
+      id: number;
+    };
     await client.call('create_plan', { title: 'b', body_markdown: 'x' });
     await client.call('update_plan', { id: a.id, status: 'completed' });
 
-    const all = (await client.call('list_plans', {})) as Array<{ id: number; body_markdown?: string }>;
+    const all = (await client.call('list_plans', {})) as Array<{
+      id: number;
+      body_markdown?: string;
+    }>;
     expect(all).toHaveLength(2);
     expect(all[0].body_markdown).toBeUndefined();
 
@@ -1597,7 +1651,9 @@ describe('plans tools', () => {
   });
 
   it('update_plan patches title and body', async () => {
-    const created = await client.call('create_plan', { title: 'old', body_markdown: 'old' }) as { id: number };
+    const created = (await client.call('create_plan', { title: 'old', body_markdown: 'old' })) as {
+      id: number;
+    };
     const updated = await client.call('update_plan', {
       id: created.id,
       title: 'new',
@@ -1608,7 +1664,9 @@ describe('plans tools', () => {
 
   it('create_plan with non-existent service_id returns not_found', async () => {
     const raw = await client.callRaw('create_plan', {
-      title: 'x', body_markdown: 'x', service_id: 9999,
+      title: 'x',
+      body_markdown: 'x',
+      service_id: 9999,
     });
     expect(raw.isError).toBe(true);
     const body = JSON.parse(raw.content[0].text);
@@ -1625,6 +1683,7 @@ Expected: FAIL — tools missing.
 - [ ] **Step 3: Implement `tools/plans.ts`**
 
 `packages/mcp-server/src/tools/plans.ts`:
+
 ```ts
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
@@ -1637,8 +1696,7 @@ function ok(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
 }
 
-const PLAN_LIST_COLUMNS =
-  'id, title, status, service_id, parent_plan_id, created_at, updated_at';
+const PLAN_LIST_COLUMNS = 'id, title, status, service_id, parent_plan_id, created_at, updated_at';
 
 export function registerPlans(server: McpServer, db: Db): void {
   server.registerTool(
@@ -1658,7 +1716,13 @@ export function registerPlans(server: McpServer, db: Db): void {
         const { rows } = await db.query(
           `INSERT INTO plans(title, body_markdown, service_id, parent_plan_id, status)
            VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-          [input.title, input.body_markdown, input.service_id ?? null, input.parent_plan_id ?? null, input.status],
+          [
+            input.title,
+            input.body_markdown,
+            input.service_id ?? null,
+            input.parent_plan_id ?? null,
+            input.status,
+          ],
         );
         return ok(rows[0]);
       } catch (err) {
@@ -1675,7 +1739,8 @@ export function registerPlans(server: McpServer, db: Db): void {
     },
     async ({ id }) => {
       const { rows } = await db.query(`SELECT * FROM plans WHERE id = $1`, [id]);
-      if (rows.length === 0) return errorToToolResult(new AppError('not_found', `plan ${id} not found`));
+      if (rows.length === 0)
+        return errorToToolResult(new AppError('not_found', `plan ${id} not found`));
       return ok(rows[0]);
     },
   );
@@ -1683,7 +1748,8 @@ export function registerPlans(server: McpServer, db: Db): void {
   server.registerTool(
     'list_plans',
     {
-      description: 'List plans (titles + structured fields, no body) optionally filtered by service or status.',
+      description:
+        'List plans (titles + structured fields, no body) optionally filtered by service or status.',
       inputSchema: z.object({
         service_id: z.number().int().positive().optional(),
         status: PlanStatus.optional(),
@@ -1741,7 +1807,8 @@ export function registerPlans(server: McpServer, db: Db): void {
           `UPDATE plans SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
           values,
         );
-        if (rows.length === 0) return errorToToolResult(new AppError('not_found', `plan ${id} not found`));
+        if (rows.length === 0)
+          return errorToToolResult(new AppError('not_found', `plan ${id} not found`));
         return ok(rows[0]);
       } catch (err) {
         return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
@@ -1779,6 +1846,7 @@ git commit -m "feat(tools): create_plan, get_plan, list_plans, update_plan"
 ### Task 12: `enqueue_work`, `get_work`, `list_work` (TDD)
 
 **Files:**
+
 - Create: `packages/mcp-server/test/integration/work.test.ts`
 - Create: `packages/mcp-server/src/tools/work.ts`
 - Modify: `packages/mcp-server/src/tools/register.ts`
@@ -1786,6 +1854,7 @@ git commit -m "feat(tools): create_plan, get_plan, list_plans, update_plan"
 - [ ] **Step 1: Write failing tests**
 
 `packages/mcp-server/test/integration/work.test.ts`:
+
 ```ts
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/server';
@@ -1831,9 +1900,11 @@ describe('work queue tools (basic CRUD)', () => {
   });
 
   it('get_work returns full record', async () => {
-    const created = await client.call('enqueue_work', {
-      type: 'code', title: 'do thing', description_markdown: 'why',
-    }) as { id: number };
+    const created = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 'do thing',
+      description_markdown: 'why',
+    })) as { id: number };
     const fetched = await client.call('get_work', { id: created.id });
     expect(fetched).toMatchObject({ id: created.id, title: 'do thing', type: 'code' });
   });
@@ -1851,7 +1922,9 @@ describe('work queue tools (basic CRUD)', () => {
 
   it('enqueue_work with bad enum rejects with invalid_input', async () => {
     const raw = await client.callRaw('enqueue_work', {
-      type: 'nope', title: 'x', description_markdown: 'x',
+      type: 'nope',
+      title: 'x',
+      description_markdown: 'x',
     });
     expect(raw.isError).toBe(true);
   });
@@ -1866,6 +1939,7 @@ Expected: FAIL — tools missing.
 - [ ] **Step 3: Implement `tools/work.ts` (CRUD portion only — claim/complete in next tasks)**
 
 `packages/mcp-server/src/tools/work.ts`:
+
 ```ts
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
@@ -1927,7 +2001,8 @@ export function registerWork(server: McpServer, db: Db): void {
     },
     async ({ id }) => {
       const { rows } = await db.query(`SELECT * FROM work_items WHERE id = $1`, [id]);
-      if (rows.length === 0) return errorToToolResult(new AppError('not_found', `work ${id} not found`));
+      if (rows.length === 0)
+        return errorToToolResult(new AppError('not_found', `work ${id} not found`));
       return ok(rows[0]);
     },
   );
@@ -1990,12 +2065,14 @@ git commit -m "feat(tools): enqueue_work, get_work, list_work"
 ### Task 13: `claim_next_work` atomic claim with concurrency test
 
 **Files:**
+
 - Create: `packages/mcp-server/test/integration/work-claim-concurrency.test.ts`
 - Modify: `packages/mcp-server/src/tools/work.ts`
 
 - [ ] **Step 1: Write the failing concurrency test**
 
 `packages/mcp-server/test/integration/work-claim-concurrency.test.ts`:
+
 ```ts
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/server';
@@ -2031,12 +2108,22 @@ describe('claim_next_work — concurrency', () => {
   });
 
   it('returns highest-priority then oldest first', async () => {
-    await client.call('enqueue_work', { type: 'code', title: 'old low', description_markdown: 'x', priority: 0 });
-    await client.call('enqueue_work', { type: 'code', title: 'high',    description_markdown: 'x', priority: 5 });
+    await client.call('enqueue_work', {
+      type: 'code',
+      title: 'old low',
+      description_markdown: 'x',
+      priority: 0,
+    });
+    await client.call('enqueue_work', {
+      type: 'code',
+      title: 'high',
+      description_markdown: 'x',
+      priority: 5,
+    });
 
-    const first = await client.call('claim_next_work', { claimed_by: 'a' }) as { title: string };
+    const first = (await client.call('claim_next_work', { claimed_by: 'a' })) as { title: string };
     expect(first.title).toBe('high');
-    const second = await client.call('claim_next_work', { claimed_by: 'a' }) as { title: string };
+    const second = (await client.call('claim_next_work', { claimed_by: 'a' })) as { title: string };
     expect(second.title).toBe('old low');
   });
 
@@ -2057,9 +2144,10 @@ describe('claim_next_work — concurrency', () => {
     await client.call('enqueue_work', { type: 'plan', title: 'p', description_markdown: 'x' });
     await client.call('enqueue_work', { type: 'code', title: 'c', description_markdown: 'x' });
 
-    const codeOnly = await client.call('claim_next_work', {
-      claimed_by: 'a', types: ['code'],
-    }) as { title: string };
+    const codeOnly = (await client.call('claim_next_work', {
+      claimed_by: 'a',
+      types: ['code'],
+    })) as { title: string };
     expect(codeOnly.title).toBe('c');
   });
 });
@@ -2073,6 +2161,7 @@ Expected: FAIL — `claim_next_work` not registered.
 - [ ] **Step 3: Add `claim_next_work` to `tools/work.ts`**
 
 Append to `packages/mcp-server/src/tools/work.ts`:
+
 ```ts
 const WorkTypeArr = z.array(WorkType).min(1);
 
@@ -2143,12 +2232,14 @@ git commit -m "feat(tools): claim_next_work with FOR UPDATE SKIP LOCKED + concur
 ### Task 14: `complete_work`, `fail_work`, `cancel_work`
 
 **Files:**
+
 - Modify: `packages/mcp-server/test/integration/work.test.ts`
 - Modify: `packages/mcp-server/src/tools/work.ts`
 
 - [ ] **Step 1: Append failing tests**
 
 Append a new `describe` block to `work.test.ts`:
+
 ```ts
 describe('complete / fail / cancel work', () => {
   let db: TestDb;
@@ -2164,7 +2255,9 @@ describe('complete / fail / cancel work', () => {
   });
 
   beforeEach(async () => {
-    await db.pool.query('TRUNCATE work_items, artifacts, plans, services, apps RESTART IDENTITY CASCADE');
+    await db.pool.query(
+      'TRUNCATE work_items, artifacts, plans, services, apps RESTART IDENTITY CASCADE',
+    );
     await client?.close();
     const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
     registerAllTools(server, db.pool);
@@ -2172,42 +2265,57 @@ describe('complete / fail / cancel work', () => {
   });
 
   async function enqueueAndClaim() {
-    const item = await client.call('enqueue_work', {
-      type: 'code', title: 't', description_markdown: 'x',
-    }) as { id: number };
+    const item = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 't',
+      description_markdown: 'x',
+    })) as { id: number };
     await client.call('claim_next_work', { claimed_by: 'tester' });
     return item;
   }
 
   it('complete_work marks completed, sets completed_at', async () => {
     const item = await enqueueAndClaim();
-    const completed = await client.call('complete_work', { id: item.id }) as { status: string; completed_at: string };
+    const completed = (await client.call('complete_work', { id: item.id })) as {
+      status: string;
+      completed_at: string;
+    };
     expect(completed.status).toBe('completed');
     expect(new Date(completed.completed_at).getTime()).toBeGreaterThan(0);
   });
 
   it('complete_work with summary creates an artifact and links it', async () => {
     const item = await enqueueAndClaim();
-    const completed = await client.call('complete_work', {
+    const completed = (await client.call('complete_work', {
       id: item.id,
       summary_markdown: '# done\nstuff',
-    }) as { id: number };
-    const artifacts = await client.call('list_artifacts', { work_item_id: completed.id }) as Array<unknown>;
+    })) as { id: number };
+    const artifacts = (await client.call('list_artifacts', {
+      work_item_id: completed.id,
+    })) as Array<unknown>;
     expect(artifacts).toHaveLength(1);
   });
 
   it('fail_work sets status=failed and stores reason', async () => {
     const item = await enqueueAndClaim();
-    const failed = await client.call('fail_work', { id: item.id, reason: 'tests broke' }) as { status: string; failure_reason: string };
+    const failed = (await client.call('fail_work', { id: item.id, reason: 'tests broke' })) as {
+      status: string;
+      failure_reason: string;
+    };
     expect(failed.status).toBe('failed');
     expect(failed.failure_reason).toBe('tests broke');
   });
 
   it('cancel_work sets status=cancelled', async () => {
-    const item = await client.call('enqueue_work', {
-      type: 'code', title: 't', description_markdown: 'x',
-    }) as { id: number };
-    const cancelled = await client.call('cancel_work', { id: item.id, reason: 'no longer needed' }) as { status: string };
+    const item = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 't',
+      description_markdown: 'x',
+    })) as { id: number };
+    const cancelled = (await client.call('cancel_work', {
+      id: item.id,
+      reason: 'no longer needed',
+    })) as { status: string };
     expect(cancelled.status).toBe('cancelled');
   });
 });
@@ -2223,12 +2331,14 @@ Expected: FAIL on the new `it` blocks.
 - [ ] **Step 3: Implement the three tools in `tools/work.ts`**
 
 Append to `packages/mcp-server/src/tools/work.ts`:
+
 ```ts
 export function registerWorkLifecycle(server: McpServer, db: Db): void {
   server.registerTool(
     'complete_work',
     {
-      description: 'Mark a work item completed; optionally store a summary as an artifact, or link an existing artifact.',
+      description:
+        'Mark a work item completed; optionally store a summary as an artifact, or link an existing artifact.',
       inputSchema: z.object({
         id: z.number().int().positive(),
         summary_markdown: z.string().optional(),
@@ -2261,10 +2371,10 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
               );
             }
             if (artifact_id) {
-              await client.query(
-                `UPDATE artifacts SET work_item_id = $1 WHERE id = $2`,
-                [id, artifact_id],
-              );
+              await client.query(`UPDATE artifacts SET work_item_id = $1 WHERE id = $2`, [
+                id,
+                artifact_id,
+              ]);
             }
             await client.query('COMMIT');
             return ok(work);
@@ -2296,7 +2406,8 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
           WHERE id=$1 RETURNING *`,
         [id, reason],
       );
-      if (rows.length === 0) return errorToToolResult(new AppError('not_found', `work ${id} not found`));
+      if (rows.length === 0)
+        return errorToToolResult(new AppError('not_found', `work ${id} not found`));
       return ok(rows[0]);
     },
   );
@@ -2316,7 +2427,8 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
           WHERE id=$1 RETURNING *`,
         [id, reason ?? null],
       );
-      if (rows.length === 0) return errorToToolResult(new AppError('not_found', `work ${id} not found`));
+      if (rows.length === 0)
+        return errorToToolResult(new AppError('not_found', `work ${id} not found`));
       return ok(rows[0]);
     },
   );
@@ -2353,6 +2465,7 @@ git commit -m "feat(tools): complete_work, fail_work, cancel_work"
 ### Task 15: `attach_artifact`, `get_artifact`, `list_artifacts`
 
 **Files:**
+
 - Create: `packages/mcp-server/test/integration/artifacts.test.ts`
 - Create: `packages/mcp-server/src/tools/artifacts.ts`
 - Modify: `packages/mcp-server/src/tools/register.ts`
@@ -2361,6 +2474,7 @@ git commit -m "feat(tools): complete_work, fail_work, cancel_work"
 - [ ] **Step 1: Write failing tests**
 
 `packages/mcp-server/test/integration/artifacts.test.ts`:
+
 ```ts
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/server';
@@ -2383,7 +2497,9 @@ describe('artifacts tools', () => {
   });
 
   beforeEach(async () => {
-    await db.pool.query('TRUNCATE artifacts, work_items, plans, services, apps RESTART IDENTITY CASCADE');
+    await db.pool.query(
+      'TRUNCATE artifacts, work_items, plans, services, apps RESTART IDENTITY CASCADE',
+    );
     await client?.close();
     const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
     registerAllTools(server, db.pool);
@@ -2391,38 +2507,56 @@ describe('artifacts tools', () => {
   });
 
   it('attach_artifact stores body and links to work item', async () => {
-    const w = await client.call('enqueue_work', {
-      type: 'review', title: 't', description_markdown: 'x',
-    }) as { id: number };
-    const a = await client.call('attach_artifact', {
-      kind: 'review_notes', title: 'review', body_markdown: '## observations',
+    const w = (await client.call('enqueue_work', {
+      type: 'review',
+      title: 't',
+      description_markdown: 'x',
+    })) as { id: number };
+    const a = (await client.call('attach_artifact', {
+      kind: 'review_notes',
+      title: 'review',
+      body_markdown: '## observations',
       work_item_id: w.id,
-    }) as { id: number; work_item_id: number };
+    })) as { id: number; work_item_id: number };
     expect(a.work_item_id).toBe(w.id);
   });
 
   it('get_artifact returns full body', async () => {
-    const a = await client.call('attach_artifact', {
-      kind: 'snippet', title: 'x', body_markdown: 'long content',
-    }) as { id: number };
-    const fetched = await client.call('get_artifact', { id: a.id }) as { body_markdown: string };
+    const a = (await client.call('attach_artifact', {
+      kind: 'snippet',
+      title: 'x',
+      body_markdown: 'long content',
+    })) as { id: number };
+    const fetched = (await client.call('get_artifact', { id: a.id })) as { body_markdown: string };
     expect(fetched.body_markdown).toBe('long content');
   });
 
   it('list_artifacts omits body and supports filters', async () => {
-    const w = await client.call('enqueue_work', {
-      type: 'code', title: 't', description_markdown: 'x',
-    }) as { id: number };
-    await client.call('attach_artifact', { kind: 'note', title: 'a', body_markdown: 'x', work_item_id: w.id });
+    const w = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 't',
+      description_markdown: 'x',
+    })) as { id: number };
+    await client.call('attach_artifact', {
+      kind: 'note',
+      title: 'a',
+      body_markdown: 'x',
+      work_item_id: w.id,
+    });
     await client.call('attach_artifact', { kind: 'note', title: 'b', body_markdown: 'x' });
-    const linked = (await client.call('list_artifacts', { work_item_id: w.id })) as Array<{ body_markdown?: string }>;
+    const linked = (await client.call('list_artifacts', { work_item_id: w.id })) as Array<{
+      body_markdown?: string;
+    }>;
     expect(linked).toHaveLength(1);
     expect(linked[0].body_markdown).toBeUndefined();
   });
 
   it('attach_artifact with bad work_item_id returns not_found', async () => {
     const raw = await client.callRaw('attach_artifact', {
-      kind: 'note', title: 'x', body_markdown: 'x', work_item_id: 9999,
+      kind: 'note',
+      title: 'x',
+      body_markdown: 'x',
+      work_item_id: 9999,
     });
     expect(raw.isError).toBe(true);
     const body = JSON.parse(raw.content[0].text);
@@ -2439,6 +2573,7 @@ Expected: FAIL — tools not registered.
 - [ ] **Step 3: Implement `tools/artifacts.ts`**
 
 `packages/mcp-server/src/tools/artifacts.ts`:
+
 ```ts
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
@@ -2449,8 +2584,7 @@ function ok(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
 }
 
-const ARTIFACT_LIST_COLUMNS =
-  'id, kind, title, work_item_id, plan_id, service_id, created_at';
+const ARTIFACT_LIST_COLUMNS = 'id, kind, title, work_item_id, plan_id, service_id, created_at';
 
 export function registerArtifacts(server: McpServer, db: Db): void {
   server.registerTool(
@@ -2495,7 +2629,8 @@ export function registerArtifacts(server: McpServer, db: Db): void {
     },
     async ({ id }) => {
       const { rows } = await db.query(`SELECT * FROM artifacts WHERE id = $1`, [id]);
-      if (rows.length === 0) return errorToToolResult(new AppError('not_found', `artifact ${id} not found`));
+      if (rows.length === 0)
+        return errorToToolResult(new AppError('not_found', `artifact ${id} not found`));
       return ok(rows[0]);
     },
   );
@@ -2562,6 +2697,7 @@ git commit -m "feat(tools): attach_artifact, get_artifact, list_artifacts"
 ### Task 16: Wrap tool handlers with logging middleware
 
 **Files:**
+
 - Modify: `packages/mcp-server/src/server.ts`
 
 The simplest place to add timing is to wrap `registerTool` calls. Since tools are registered across many files, do this with a small wrapper passed into `registerAllTools`. Alternative: monkey-patch on the server. We'll add a wrapper helper.
@@ -2569,12 +2705,17 @@ The simplest place to add timing is to wrap `registerTool` calls. Since tools ar
 - [ ] **Step 1: Add a `withInstrumentation` helper that wraps the McpServer's registerTool**
 
 `packages/mcp-server/src/server.ts` — add this above `createApp`:
+
 ```ts
 import type { Logger } from 'pino';
 
 function instrumentMcpServer(mcp: McpServer, log: Logger): void {
   const originalRegister = mcp.registerTool.bind(mcp);
-  mcp.registerTool = ((name: string, opts: Parameters<typeof originalRegister>[1], handler: Parameters<typeof originalRegister>[2]) => {
+  mcp.registerTool = ((
+    name: string,
+    opts: Parameters<typeof originalRegister>[1],
+    handler: Parameters<typeof originalRegister>[2],
+  ) => {
     const wrapped: typeof handler = async (input, ctx) => {
       const start = Date.now();
       try {
@@ -2595,6 +2736,7 @@ function instrumentMcpServer(mcp: McpServer, log: Logger): void {
 - [ ] **Step 2: Update `createApp` to accept a logger and call `instrumentMcpServer`**
 
 Modify the signature:
+
 ```ts
 import type { Logger } from 'pino';
 
@@ -2621,6 +2763,7 @@ const { app } = createApp({ db: pool, token: config.MCP_TOKEN, log });
 - [ ] **Step 4: Update tests to pass a logger**
 
 In each integration test where `createApp` is called (currently only `health.test.ts`), add:
+
 ```ts
 import pino from 'pino';
 const log = pino({ level: 'silent' });
@@ -2647,6 +2790,7 @@ git commit -m "feat(server): instrument tool calls with structured pino logs"
 ### Task 17: Auth integration test (verifies the `/mcp` bearer guard)
 
 **Files:**
+
 - Create: `packages/mcp-server/test/integration/auth.test.ts`
 
 The auth middleware itself was added in Task 8. This task adds a test that proves it works.
@@ -2654,6 +2798,7 @@ The auth middleware itself was added in Task 8. This task adds a test that prove
 - [ ] **Step 1: Write the test**
 
 `packages/mcp-server/test/integration/auth.test.ts`:
+
 ```ts
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
@@ -2694,7 +2839,7 @@ describe('bearer auth on /mcp', () => {
     expect(res.status).toBe(200);
   });
 
-  it('returns non-401 with valid token (we don\'t care about MCP semantics here)', async () => {
+  it("returns non-401 with valid token (we don't care about MCP semantics here)", async () => {
     const res = await fetch(`${baseUrl}/mcp`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
@@ -2722,6 +2867,7 @@ git commit -m "test(server): cover bearer auth guard on /mcp"
 ### Task 18: Dockerfile + finalize docker-compose with `mcp-server` service
 
 **Files:**
+
 - Create: `packages/mcp-server/Dockerfile`
 - Modify: `docker-compose.yml`
 
@@ -2763,36 +2909,40 @@ CMD ["node", "packages/mcp-server/dist/index.js"]
 - [ ] **Step 2: Add `mcp-server` to `docker-compose.yml`**
 
 Replace the placeholder comment in `docker-compose.yml`:
+
 ```yaml
-  mcp-server:
-    build:
-      context: .
-      dockerfile: packages/mcp-server/Dockerfile
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-sapling}:${POSTGRES_PASSWORD:-changeme-locally}@postgres:5432/${POSTGRES_DB:-sapling}
-      SAPLING_PORT: 3333
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      LOG_PAYLOADS: ${LOG_PAYLOADS:-false}
-      MCP_TOKEN: ${MCP_TOKEN:-}
-    ports:
-      - "127.0.0.1:3333:3333"
+mcp-server:
+  build:
+    context: .
+    dockerfile: packages/mcp-server/Dockerfile
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    DATABASE_URL: postgres://${POSTGRES_USER:-sapling}:${POSTGRES_PASSWORD:-changeme-locally}@postgres:5432/${POSTGRES_DB:-sapling}
+    SAPLING_PORT: 3333
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    LOG_PAYLOADS: ${LOG_PAYLOADS:-false}
+    MCP_TOKEN: ${MCP_TOKEN:-}
+  ports:
+    - '127.0.0.1:3333:3333'
 ```
 
 - [ ] **Step 3: Build and run end-to-end**
 
 Run:
+
 ```bash
 docker compose build mcp-server
 docker compose up -d
 docker compose logs -f mcp-server
 ```
+
 Expected: logs show `running migrations` then `sapling mcp-server listening`. `curl http://127.0.0.1:3333/health` returns `{"ok":true,"db":"up"}`.
 
 Tear down:
+
 ```bash
 docker compose down
 ```
@@ -2811,12 +2961,14 @@ git commit -m "feat(deploy): containerize mcp-server, wire compose with healthch
 ### Task 19: Plugin scaffold + `.mcp.json` template
 
 **Files:**
+
 - Create: `packages/claude-plugin/.claude/.mcp.json`
 - Create: `packages/claude-plugin/README.md`
 
 - [ ] **Step 1: Create `.mcp.json` template**
 
 `packages/claude-plugin/.claude/.mcp.json`:
+
 ```json
 {
   "mcpServers": {
@@ -2831,6 +2983,7 @@ git commit -m "feat(deploy): containerize mcp-server, wire compose with healthch
 - [ ] **Step 2: Plugin README**
 
 `packages/claude-plugin/README.md`:
+
 ```markdown
 # Sapling — Claude Code Plugin
 
@@ -2863,6 +3016,7 @@ git commit -m "feat(plugin): scaffold claude-plugin with .mcp.json and README"
 ### Task 20: `/sapling:work`, `/sapling:plan`, `/sapling:enqueue` skills
 
 **Files:**
+
 - Create: `packages/claude-plugin/.claude/skills/sapling-work/SKILL.md`
 - Create: `packages/claude-plugin/.claude/skills/sapling-plan/SKILL.md`
 - Create: `packages/claude-plugin/.claude/skills/sapling-enqueue/SKILL.md`
@@ -2888,6 +3042,7 @@ Claim the next pending work item from Sapling and execute it in this session.
 3. Otherwise, branch on `type`:
 
 ### type = 'plan'
+
 - Read `description_markdown`, `service_id` (if set: `mcp__sapling__get_service`).
 - Use the superpowers:brainstorming and superpowers:writing-plans skills as needed.
 - Once the plan is drafted, call `mcp__sapling__create_plan` to persist it.
@@ -2895,6 +3050,7 @@ Claim the next pending work item from Sapling and execute it in this session.
 - Call `mcp__sapling__complete_work` with `id` and a one-paragraph `summary_markdown`.
 
 ### type = 'code'
+
 - If `plan_id` is set, call `mcp__sapling__get_plan(id=plan_id)` and read the body.
 - If `service_id` is set, call `mcp__sapling__get_service(id=service_id)` to load conventions, repo URL, tech stack.
 - Do the actual work in the relevant repo on disk (filesystem, git). Sapling does not own the code.
@@ -2903,6 +3059,7 @@ Claim the next pending work item from Sapling and execute it in this session.
 - Call `mcp__sapling__complete_work` with `summary_markdown`.
 
 ### type = 'review'
+
 - Read `branch` / `pr_url` from the work item.
 - Inspect the diff (filesystem, `gh pr diff`, etc.).
 - Call `mcp__sapling__attach_artifact(kind='review_notes', body_markdown=..., work_item_id=...)`.
@@ -2916,7 +3073,7 @@ and stop. Do not loop on `claim_next_work` automatically — let the user decide
 
 - [ ] **Step 2: Create `sapling-plan/SKILL.md`**
 
-```markdown
+````markdown
 ---
 name: sapling-plan
 description: Quickly enqueue a planning task in Sapling. Triggers on /sapling:plan <description>.
@@ -2940,9 +3097,11 @@ Enqueue a `plan`-type work item.
   "service_id": <service id if known, otherwise omit>
 }
 ```
+````
 
 4. Tell the user: "Queued plan task #<id>. Run /sapling:work to start it."
-```
+
+````
 
 - [ ] **Step 3: Create `sapling-enqueue/SKILL.md`**
 
@@ -2972,23 +3131,25 @@ Enqueue a `code` or `review` work item.
   "branch": "<if provided>",
   "pr_url": "<if provided>"
 }
-```
+````
 
 5. Confirm: "Queued <type> task #<id>."
-```
+
+````
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add packages/claude-plugin/.claude/skills
 git commit -m "feat(plugin): add /sapling:work, /sapling:plan, /sapling:enqueue skills"
-```
+````
 
 ---
 
 ### Task 21: `/sapling:status` and `/sapling:context` skills
 
 **Files:**
+
 - Create: `packages/claude-plugin/.claude/skills/sapling-status/SKILL.md`
 - Create: `packages/claude-plugin/.claude/skills/sapling-context/SKILL.md`
 
@@ -3012,12 +3173,13 @@ Summarize the current state of the Sapling queue.
    - `{ status: 'completed' }`
    - `{ status: 'failed' }`
 2. Render a table:
-
 ```
-PENDING:   <n>
-CLAIMED:   <n>   (in flight)
+
+PENDING: <n>
+CLAIMED: <n> (in flight)
 COMPLETED: <n>
-FAILED:    <n>
+FAILED: <n>
+
 ```
 
 3. List the next 5 pending titles by `priority DESC, created_at ASC`.
@@ -3043,21 +3205,25 @@ Inject everything the agent needs to ground itself before working on a service.
 3. Call `mcp__sapling__list_plans({ service_id: <id> })`.
 4. Call `mcp__sapling__list_artifacts({ service_id: <id> })`. Show the last 10.
 5. Render a summary in this shape:
-
 ```
+
 ## Service: <name> (app: <app_name>)
+
 - Repo: <repo_url>
 - Tech: <tech_stack joined>
 - Depends on: <depends_on joined>
 - Conventions: <conventions text or 'none'>
 
 ## Plans (<count>)
+
 - #<id> [<status>] <title>
 - ...
 
 ## Recent artifacts (<count shown>)
+
 - #<id> [<kind>] <title> (<created_at>)
 - ...
+
 ```
 
 6. End with: "Ready. Use /sapling:work to pick up tasks for this service."
@@ -3077,6 +3243,7 @@ git commit -m "feat(plugin): add /sapling:status and /sapling:context skills"
 ### Task 22: Makefile + final README
 
 **Files:**
+
 - Create: `Makefile`
 - Modify: `README.md`
 
@@ -3112,7 +3279,7 @@ nuke:
 
 - [ ] **Step 2: Replace placeholder `README.md`**
 
-```markdown
+````markdown
 # Sapling
 
 AI-native MCP dev workbench: Postgres-backed knowledge store and typed work queue exposed to Claude Code (and other agents) via MCP.
@@ -3126,6 +3293,7 @@ cp .env.example .env
 make up                       # postgres + mcp-server in docker
 curl http://127.0.0.1:3333/health
 ```
+````
 
 Then add the Sapling MCP to your Claude Code config (or copy `packages/claude-plugin/.claude/.mcp.json` into your project):
 
@@ -3161,7 +3329,15 @@ make nuke    # stop AND drop data volume + ./data/postgres (5s confirmation)
 Set `MCP_TOKEN=...` in `.env` to require a bearer token on `/mcp`. Then update your client config:
 
 ```json
-{ "mcpServers": { "sapling": { "type": "http", "url": "http://localhost:3333/mcp", "headers": { "Authorization": "Bearer YOUR_TOKEN" } } } }
+{
+  "mcpServers": {
+    "sapling": {
+      "type": "http",
+      "url": "http://localhost:3333/mcp",
+      "headers": { "Authorization": "Bearer YOUR_TOKEN" }
+    }
+  }
+}
 ```
 
 ## Layout
@@ -3176,7 +3352,8 @@ Tests use [testcontainers](https://github.com/testcontainers/testcontainers-node
 ```bash
 make test
 ```
-```
+
+````
 
 - [ ] **Step 3: Verify `make test` and `make up` both work end-to-end**
 
@@ -3186,7 +3363,8 @@ make test
 make up
 curl http://127.0.0.1:3333/health
 make down
-```
+````
+
 Expected: tests pass; health endpoint returns `{"ok":true,"db":"up"}`.
 
 - [ ] **Step 4: Final format + commit**
@@ -3202,6 +3380,7 @@ git commit -m "docs: add Makefile and finalized README"
 ## Done
 
 After Task 22:
+
 - 20 MCP tools across 4 families, all integration-tested against real Postgres.
 - `claim_next_work` proven concurrency-safe via parallel-claim test.
 - HTTP/Streamable transport on `localhost:3333`, optional bearer auth.
