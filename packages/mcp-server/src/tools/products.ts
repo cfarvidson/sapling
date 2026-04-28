@@ -12,13 +12,17 @@ export function registerProducts(server: McpServer, db: Db): void {
     'register_app',
     {
       description: 'Create an app (top-level product grouping for services).',
-      inputSchema: { name: z.string().min(1), description: z.string().optional() },
+      inputSchema: {
+        name: z.string().min(1),
+        description: z.string().optional(),
+        conventions: z.string().optional(),
+      },
     },
-    async ({ name, description }) => {
+    async ({ name, description, conventions }) => {
       try {
         const { rows } = await db.query(
-          `INSERT INTO apps(name, description) VALUES ($1, $2) RETURNING *`,
-          [name, description ?? null],
+          `INSERT INTO apps(name, description, conventions) VALUES ($1, $2, $3) RETURNING *`,
+          [name, description ?? null, conventions ?? null],
         );
         return ok(rows[0]);
       } catch (err) {
@@ -36,6 +40,70 @@ export function registerProducts(server: McpServer, db: Db): void {
     async () => {
       const { rows } = await db.query(`SELECT * FROM apps ORDER BY id ASC`);
       return ok(rows);
+    },
+  );
+
+  server.registerTool(
+    'get_app',
+    {
+      description: 'Fetch an app by id or name.',
+      inputSchema: z
+        .object({
+          id: z.number().int().positive().optional(),
+          name: z.string().optional(),
+        })
+        .refine((v) => v.id !== undefined || v.name !== undefined, {
+          message: 'must provide id or name',
+        }),
+    },
+    async (input) => {
+      const { rows } =
+        input.id !== undefined
+          ? await db.query(`SELECT * FROM apps WHERE id = $1`, [input.id])
+          : await db.query(`SELECT * FROM apps WHERE name = $1`, [input.name]);
+      if (rows.length === 0) return errorToToolResult(new AppError('not_found', 'app not found'));
+      return ok(rows[0]);
+    },
+  );
+
+  server.registerTool(
+    'update_app',
+    {
+      description: 'Patch any subset of app fields by id.',
+      inputSchema: {
+        id: z.number().int().positive(),
+        name: z.string().min(1).optional(),
+        description: z.string().nullable().optional(),
+        conventions: z.string().nullable().optional(),
+      },
+    },
+    async ({ id, ...patch }) => {
+      const fields = (Object.keys(patch) as Array<keyof typeof patch>).filter(
+        (k) => patch[k] !== undefined,
+      );
+      if (fields.length === 0) {
+        return errorToToolResult(new AppError('invalid_input', 'no fields to update'));
+      }
+      const sets: string[] = [];
+      const values: unknown[] = [];
+      let i = 1;
+      for (const f of fields) {
+        sets.push(`${f} = $${i++}`);
+        values.push(patch[f]);
+      }
+      sets.push(`updated_at = now()`);
+      values.push(id);
+      try {
+        const { rows } = await db.query(
+          `UPDATE apps SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
+          values,
+        );
+        if (rows.length === 0)
+          return errorToToolResult(new AppError('not_found', `app ${id} not found`));
+        return ok(rows[0]);
+      } catch (err) {
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      }
     },
   );
 }
