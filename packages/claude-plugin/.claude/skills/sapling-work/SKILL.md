@@ -23,12 +23,16 @@ Claim the next pending work item from Sapling and execute it in this session.
 
 ### type = 'plan'
 
+The goal is to finish this branch with an **`active` plan** — i.e. one a code task can run against without further input — not a `draft` parking lot. Don't persist + complete until the loose ends are resolved.
+
 - Read `description_markdown`, `service_id` (if set: `mcp__sapling__get_service`).
 - Use the superpowers:brainstorming and superpowers:writing-plans skills as needed.
 - Plans typically don't produce commits, but exploration still happens in the worktree so any scratch edits stay isolated.
-- Once the plan is drafted, call `mcp__sapling__create_plan` to persist it.
-- Optionally call `mcp__sapling__enqueue_work` for follow-on `code` tasks linked via `plan_id` (set `branch` if you've already created one).
-- Call `mcp__sapling__complete_work` with `id` and a one-paragraph `summary_markdown`.
+- **Surface every open question before writing the plan.** While drafting, keep a running list of: ambiguous requirements ("does X include Y?"), unspecified data shapes / API contracts, missing acceptance criteria, choice points where two reasonable approaches exist, integrations / dependencies whose behaviour you assumed, rollout / migration / backwards-compat concerns, and test strategy gaps.
+- **Ask in batched rounds.** Send one message containing all current open questions (numbered list), wait for answers, integrate them, then ask again only if new questions surfaced from the answers. Don't drip questions one at a time. Don't paper over uncertainty with vague language — resolve it before persisting.
+- Only when there are no open questions left, persist the plan with `mcp__sapling__create_plan({ ..., status: 'active' })`. If the user explicitly asks to defer ("park this as draft, I'll review later"), pass `status: 'draft'` instead and tell them how to flip it (`/sapling:queue plan <id> activate`).
+- Offer to enqueue follow-on `code` work (`mcp__sapling__enqueue_work({ type: 'code', plan_id, service_id, title, description_markdown, branch })`). Default to "yes, one item per logical step in the plan"; let the user veto.
+- Call `mcp__sapling__complete_work` with `id` and a `summary_markdown` that names the new plan id, its status, and any follow-on work item ids.
 
 ### type = 'code'
 
