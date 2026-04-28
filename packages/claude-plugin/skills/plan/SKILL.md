@@ -1,5 +1,5 @@
 ---
-name: sapling-plan
+name: plan
 description: Quickly enqueue a planning task in Sapling. Triggers on /sapling:plan <description>.
 ---
 

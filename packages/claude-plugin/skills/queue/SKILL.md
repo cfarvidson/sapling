@@ -1,5 +1,5 @@
 ---
-name: sapling-queue
+name: queue
 description: Inspect and modify the Sapling queue — list pending work and non-archived plans, drill into a single work item or plan, and run lifecycle actions. Triggers on /sapling:queue.
 ---
 

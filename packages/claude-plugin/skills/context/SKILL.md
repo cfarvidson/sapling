@@ -1,5 +1,5 @@
 ---
-name: sapling-context
+name: context
 description: Load full context for a service into the conversation (metadata, plans, recent artifacts). Triggers on /sapling:context <service>.
 ---
 

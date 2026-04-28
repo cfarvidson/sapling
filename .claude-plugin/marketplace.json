@@ -1,0 +1,24 @@
+{
+  "name": "sapling",
+  "owner": {
+    "name": "Carl-Fredrik Arvidson",
+    "url": "https://github.com/cfarvidson"
+  },
+  "metadata": {
+    "description": "Sapling marketplace — Postgres-backed knowledge store and typed work queue for Claude Code.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "sapling",
+      "description": "Slash commands and MCP wiring for the Sapling MCP server (work queue, plans, rules, services).",
+      "author": {
+        "name": "Carl-Fredrik Arvidson",
+        "url": "https://github.com/cfarvidson"
+      },
+      "homepage": "https://github.com/cfarvidson/sapling",
+      "tags": ["sapling", "mcp", "queue", "planning", "agents"],
+      "source": "./packages/claude-plugin"
+    }
+  ]
+}

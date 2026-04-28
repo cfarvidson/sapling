@@ -1,5 +1,5 @@
 ---
-name: sapling-learn
+name: learn
 description: Research code repos for an app and populate Sapling with services, dependencies, and an architecture summary. Triggers on /sapling:learn.
 ---
 

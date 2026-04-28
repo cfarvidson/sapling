@@ -12,7 +12,25 @@ make up                       # postgres + mcp-server in docker
 curl http://127.0.0.1:3333/health
 ```
 
-Then add the Sapling MCP to your Claude Code config (or copy `packages/claude-plugin/.claude/.mcp.json` into your project):
+Then install the Sapling Claude Code plugin (slash commands + MCP wiring in one step):
+
+```text
+/plugin marketplace add cfarvidson/sapling
+/plugin install sapling@sapling
+```
+
+That gives you these `/sapling:<name>` slash commands:
+
+- `/sapling:work` — pull next task and execute it
+- `/sapling:plan <desc>` — enqueue a planning task
+- `/sapling:enqueue <code|review> <desc>` — enqueue a code or review task
+- `/sapling:status` — queue health
+- `/sapling:queue [<work|plan> <id> [action]]` — inspect the queue and run lifecycle actions (activate, archive, update, replace, cancel, block, unblock, retry)
+- `/sapling:rules [<service> | app <app-name>] [add|replace|remove|clear …]` — manage binding rules for an app or service
+- `/sapling:context <service>` — load service context
+- `/sapling:learn <app> [<path1> ...]` — research repos for an app; populate services, dependencies, and an architecture artifact
+
+If you'd rather wire the MCP server up by hand instead of installing the plugin, point your client at the running server:
 
 ```json
 {
@@ -21,17 +39,6 @@ Then add the Sapling MCP to your Claude Code config (or copy `packages/claude-pl
   }
 }
 ```
-
-Copy `packages/claude-plugin/.claude/skills/` into your project's `.claude/skills/` directory to install the slash commands:
-
-- `/sapling:work` — pull next task and execute it
-- `/sapling:plan <desc>` — enqueue a planning task
-- `/sapling:enqueue <code|review> <desc>` — enqueue a code or review task
-- `/sapling:status` — queue health
-- `/sapling:queue [<work|plan> <id> [action]]` — inspect the queue and run lifecycle actions
-- `/sapling:rules [<service> | app <app-name>] [add|replace|remove|clear …]` — manage binding rules for an app or service
-- `/sapling:context <service>` — load service context
-- `/sapling:learn <app> [<path1> ...]` — research repos for an app; populate services, dependencies, and an architecture artifact
 
 ## Common commands
 

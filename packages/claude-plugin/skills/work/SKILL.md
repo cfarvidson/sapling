@@ -1,5 +1,5 @@
 ---
-name: sapling-work
+name: work
 description: Pull the next pending Sapling work item and execute it. Triggers on /sapling:work.
 ---
 

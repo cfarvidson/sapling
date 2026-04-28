@@ -1,5 +1,5 @@
 ---
-name: sapling-enqueue
+name: enqueue
 description: Enqueue a code or review task in Sapling. Triggers on /sapling:enqueue <code|review> <description>.
 ---
 

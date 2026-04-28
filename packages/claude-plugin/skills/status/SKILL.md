@@ -1,5 +1,5 @@
 ---
-name: sapling-status
+name: status
 description: Show Sapling queue health (pending / claimed / completed counts). Triggers on /sapling:status.
 ---
 

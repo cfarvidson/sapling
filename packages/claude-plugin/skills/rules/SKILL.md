@@ -1,5 +1,5 @@
 ---
-name: sapling-rules
+name: rules
 description: View, add, replace, or clear binding instructions ("rules") for an app or service in Sapling. Rules are loaded by /sapling:work and treated as non-negotiable. Triggers on /sapling:rules.
 ---
 
