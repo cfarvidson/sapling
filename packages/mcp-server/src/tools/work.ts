@@ -94,3 +94,39 @@ export function registerWork(server: McpServer, db: Db): void {
 
   // claim_next_work / complete_work / fail_work / cancel_work added in Tasks 13-14.
 }
+
+const WorkTypeArr = z.array(WorkType).min(1);
+
+export function registerWorkClaim(server: McpServer, db: Db): void {
+  server.registerTool(
+    'claim_next_work',
+    {
+      description: 'Atomically claim the next pending work item. Returns null if none.',
+      inputSchema: {
+        claimed_by: z.string().min(1),
+        types: WorkTypeArr.optional(),
+        service_id: z.number().int().positive().optional(),
+      },
+    },
+    async ({ claimed_by, types, service_id }) => {
+      const { rows } = await db.query(
+        `WITH next AS (
+           SELECT id FROM work_items
+            WHERE status = 'pending'
+              AND ($1::work_type[] IS NULL OR type = ANY($1))
+              AND ($2::int IS NULL OR service_id = $2)
+            ORDER BY priority DESC, created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+         )
+         UPDATE work_items w
+            SET status = 'claimed', claimed_at = now(), claimed_by = $3, updated_at = now()
+           FROM next
+          WHERE w.id = next.id
+         RETURNING w.*`,
+        [types ?? null, service_id ?? null, claimed_by],
+      );
+      return { content: [{ type: 'text' as const, text: JSON.stringify(rows[0] ?? null) }] };
+    },
+  );
+}
