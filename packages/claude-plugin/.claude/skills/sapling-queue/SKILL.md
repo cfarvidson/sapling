@@ -19,6 +19,8 @@ Surface and edit Sapling state. `list_work` / `list_plans` show metadata only �
                                                — revise body/title from a free-form instruction
 /sapling:queue plan <id> replace               — replace the body wholesale (asks for new body)
 /sapling:queue work <id> cancel [<reason>]     — pending|claimed → cancelled
+/sapling:queue work <id> block "<reason>"      — pending|claimed → blocked (skipped by claim_next_work)
+/sapling:queue work <id> unblock               — blocked → pending
 /sapling:queue work <id> retry                 — re-enqueue a copy of a failed/cancelled item
 ```
 
@@ -29,22 +31,24 @@ Surface and edit Sapling state. `list_work` / `list_plans` show metadata only �
 1. Call in parallel:
    - `mcp__sapling__list_work({ status: 'pending' })`
    - `mcp__sapling__list_work({ status: 'claimed' })`
+   - `mcp__sapling__list_work({ status: 'blocked' })`
    - `mcp__sapling__list_work({ status: 'failed' })`
    - `mcp__sapling__list_plans({ status: 'draft' })`
    - `mcp__sapling__list_plans({ status: 'active' })`
-2. Render four sections, latest first; each row shows `#id` `type/status` `title` and (for work) `service_id` / `plan_id` / `claimed_by`:
+2. Render five work sections + two plan sections, latest first; each row shows `#id` `type/status` `title` and (for work) `service_id` / `plan_id` / `claimed_by`:
 
 ```
 PENDING WORK
   #4  review     IRIS-1636: …                  service=32 plan=1
   …
 CLAIMED WORK         (in flight)
+BLOCKED WORK         (with reason on its own line — waiting on external dependency)
 FAILED WORK          (with failure_reason on its own line)
 DRAFT PLANS          ← these need user sign-off; nothing will execute against them
 ACTIVE PLANS
 ```
 
-3. Footer: `Run /sapling:queue plan <id> activate` etc. so the next action is one keystroke away.
+3. Footer: `Run /sapling:queue plan <id> activate` or `/sapling:queue work <id> unblock` so the next action is one keystroke away.
 
 ### `work <id>` / `plan <id>`
 
@@ -62,6 +66,8 @@ ACTIVE PLANS
 ### Work actions
 
 - `cancel`: `mcp__sapling__cancel_work({ id, reason })`. Refuse if `status` is already `completed` — surface why. After cancelling, run the plan roll-up nudge below.
+- `block "<reason>"`: `mcp__sapling__block_work({ id, reason })`. Use when the item can't progress because of an external wait (PR review needed, missing answer from a stakeholder, blocked by another Sapling work item, infra not yet provisioned). Reason is required. `claim_next_work` will skip it.
+- `unblock`: `mcp__sapling__unblock_work({ id })`. Flips `blocked → pending` and clears the reason. Refuse if the item isn't currently `blocked`.
 - `retry`: only valid for `failed` or `cancelled`. Read the original via `get_work`, then `enqueue_work` with the same `type`, `title`, `description_markdown`, `service_id`, `plan_id`, `branch`, `pr_url`. Tell the user the new id. Don't reuse the old row.
 
 ### Plan roll-up nudge

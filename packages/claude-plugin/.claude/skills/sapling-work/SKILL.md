@@ -68,7 +68,11 @@ The goal is to finish this branch with an **`active` plan** — i.e. one a code 
 - **Plan roll-up nudge.** If the just-completed work item had a `plan_id`, call `mcp__sapling__list_work({ plan_id })`. If every sibling row is `completed` or `cancelled` and the plan's status is still `active`, ask the user: "All work for plan #N is terminal. Mark the plan `completed`?" — on yes, `mcp__sapling__update_plan({ id: plan_id, status: 'completed' })`. On no, leave it alone. Skip the prompt entirely if any sibling is still `pending`/`claimed`/`failed`.
 - **Worktree cleanup.** Leave the worktree on disk if there's an open PR or follow-on work; otherwise tear it down with `git worktree remove` once the work item is `completed` and nothing else references it.
 
-## Failure handling
+## Failure vs. blocked
 
-If you cannot complete the work, call `mcp__sapling__fail_work(id, reason)` with a clear reason
-and stop. Do not loop on `claim_next_work` automatically — let the user decide.
+Distinguish "this work item went wrong" from "this work item can't progress yet":
+
+- **Blocked** — the work itself is fine but waiting on something external: PR review, a stakeholder answer, another Sapling work item that hasn't completed, infra/access not yet provisioned. Call `mcp__sapling__block_work({ id, reason })` with a specific reason ("waiting on PR review for cfarvidson/iris-493-…"). `claim_next_work` skips blocked items, so the queue keeps moving. The user (or an upstream completion) flips it back via `/sapling:queue work <id> unblock`.
+- **Failed** — actually wrong: tests fail you can't fix, the plan turned out to be infeasible, the worktree is in a broken state you can't recover. Call `mcp__sapling__fail_work({ id, reason })`. Failures are not auto-retried.
+
+In both cases, stop after the call. Do not loop on `claim_next_work` automatically — let the user decide.

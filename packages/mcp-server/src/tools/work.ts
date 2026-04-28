@@ -4,7 +4,7 @@ import type { Db } from '../db.js';
 import { AppError, errorToToolResult, mapPgError } from '../errors.js';
 
 const WorkType = z.enum(['plan', 'code', 'review']);
-const WorkStatus = z.enum(['pending', 'claimed', 'completed', 'failed', 'cancelled']);
+const WorkStatus = z.enum(['pending', 'claimed', 'completed', 'failed', 'cancelled', 'blocked']);
 
 function ok(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
@@ -189,6 +189,56 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
       );
       if (rows.length === 0)
         return errorToToolResult(new AppError('not_found', `work ${id} not found`));
+      return ok(rows[0]);
+    },
+  );
+
+  server.registerTool(
+    'block_work',
+    {
+      description:
+        'Mark a work item blocked on an external dependency. claim_next_work skips blocked items; use unblock_work to flip back to pending.',
+      inputSchema: {
+        id: z.number().int().positive(),
+        reason: z.string().min(1),
+      },
+    },
+    async ({ id, reason }) => {
+      const { rows } = await db.query(
+        `UPDATE work_items SET status='blocked', failure_reason=$2, updated_at=now()
+          WHERE id=$1 AND status IN ('pending','claimed','blocked','failed') RETURNING *`,
+        [id, reason],
+      );
+      if (rows.length === 0)
+        return errorToToolResult(
+          new AppError(
+            'conflict',
+            `work ${id} not found or in a terminal state (completed/cancelled)`,
+          ),
+        );
+      return ok(rows[0]);
+    },
+  );
+
+  server.registerTool(
+    'unblock_work',
+    {
+      description: 'Flip a blocked work item back to pending so it can be claimed again.',
+      inputSchema: {
+        id: z.number().int().positive(),
+      },
+    },
+    async ({ id }) => {
+      const { rows } = await db.query(
+        `UPDATE work_items
+            SET status='pending', failure_reason=NULL, claimed_at=NULL, claimed_by=NULL, updated_at=now()
+          WHERE id=$1 AND status='blocked' RETURNING *`,
+        [id],
+      );
+      if (rows.length === 0)
+        return errorToToolResult(
+          new AppError('conflict', `work ${id} not found or not in 'blocked' state`),
+        );
       return ok(rows[0]);
     },
   );
