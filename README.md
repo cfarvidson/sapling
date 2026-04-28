@@ -1,8 +1,12 @@
 # Sapling
 
+<p align="center">
+  <img src="logo.png" alt="Sapling logo" width="240">
+</p>
+
 AI-native MCP dev workbench: Postgres-backed knowledge store and typed work queue exposed to Claude Code (and other agents) via MCP.
 
-See the design spec for full rationale: `docs/superpowers/specs/2026-04-28-sapling-mcp-dev-workbench-design.md`.
+See the [design spec](docs/superpowers/specs/2026-04-28-sapling-mcp-dev-workbench-design.md) for full rationale.
 
 ## Quickstart
 
