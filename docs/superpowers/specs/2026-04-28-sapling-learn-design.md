@@ -56,11 +56,11 @@ No code changes to `packages/mcp-server/`. One new directory: `packages/claude-p
 
 ## Invocation Forms
 
-| Form | Behavior |
-|---|---|
-| `/sapling:learn <app> <path1> [path2 ...]` | Use given repo paths as services. App is created if missing. |
-| `/sapling:learn <app> <single-dir>` | Single arg. If the dir contains `.git/`, treat as one service. Otherwise scan immediate children for `.git/` subdirs; each match is a service. |
-| `/sapling:learn <app>` | No paths: read existing `services` for the app, use their `repo_url` if it points to a local path (`file://` or absolute). Fail with a clear message otherwise. |
+| Form                                       | Behavior                                                                                                                                                        |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/sapling:learn <app> <path1> [path2 ...]` | Use given repo paths as services. App is created if missing.                                                                                                    |
+| `/sapling:learn <app> <single-dir>`        | Single arg. If the dir contains `.git/`, treat as one service. Otherwise scan immediate children for `.git/` subdirs; each match is a service.                  |
+| `/sapling:learn <app>`                     | No paths: read existing `services` for the app, use their `repo_url` if it points to a local path (`file://` or absolute). Fail with a clear message otherwise. |
 
 ## Control Flow
 
@@ -88,14 +88,14 @@ No code changes to `packages/mcp-server/`. One new directory: `packages/claude-p
 
 ## Detection Rules
 
-| Output field | Signals |
-|---|---|
-| `name` | Directory name, lowercased and sanitized (`[^a-z0-9-]` → `-`). |
-| `repo_url` | `git -C <path> remote get-url origin` if it succeeds, else `file://<absolute-path>`. |
-| `tech_stack[]` | Manifest detection. `package.json` → `typescript`/`node` plus framework keys (react, next, express, fastify, hono…). `pyproject.toml`/`requirements.txt` → `python` plus framework. `Gemfile` → `ruby`/`rails`. `go.mod` → `go`. `Cargo.toml` → `rust`. Plus DB drivers in deps (`pg` → `postgres`, `mysql2` → `mysql`, `redis` → `redis`, etc.). De-duped. |
+| Output field   | Signals                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`         | Directory name, lowercased and sanitized (`[^a-z0-9-]` → `-`).                                                                                                                                                                                                                                                                                                                                                                              |
+| `repo_url`     | `git -C <path> remote get-url origin` if it succeeds, else `file://<absolute-path>`.                                                                                                                                                                                                                                                                                                                                                        |
+| `tech_stack[]` | Manifest detection. `package.json` → `typescript`/`node` plus framework keys (react, next, express, fastify, hono…). `pyproject.toml`/`requirements.txt` → `python` plus framework. `Gemfile` → `ruby`/`rails`. `go.mod` → `go`. `Cargo.toml` → `rust`. Plus DB drivers in deps (`pg` → `postgres`, `mysql2` → `mysql`, `redis` → `redis`, etc.). De-duped.                                                                                 |
 | `depends_on[]` | Heuristics in priority order: (1) shared internal packages from monorepo manifests (`workspaces` in `package.json`, `pnpm-workspace.yaml`, sibling crate paths in `Cargo.toml`); (2) HTTP/RPC base URLs grepped from source that resolve to other service names in this app; (3) message-bus topic names if they overlap with service names. **Result is a list of service NAMES** (strings), not ids — the schema stores them as `TEXT[]`. |
-| `description` | One-line summary the LLM writes after reading the README and `package.json` description. |
-| `conventions` | If `CLAUDE.md` or `AGENTS.md` exists at repo root, store its absolute path. Else null. |
+| `description`  | One-line summary the LLM writes after reading the README and `package.json` description.                                                                                                                                                                                                                                                                                                                                                    |
+| `conventions`  | If `CLAUDE.md` or `AGENTS.md` exists at repo root, store its absolute path. Else null.                                                                                                                                                                                                                                                                                                                                                      |
 
 ## Merge Semantics on Re-run
 
@@ -115,18 +115,22 @@ Single markdown body, ~200–500 words:
 _Generated by /sapling:learn on <YYYY-MM-DD>_
 
 ## Services
+
 - **<service-1>** (<tech_stack joined>) — <description> — repo: <repo_url>
 - **<service-2>** ...
 
 ## Dependencies
+
 - <service-a> → <service-b> (<reason: shared package / HTTP / topic>)
 - ...
 
 ## Entry points
+
 - <service-x> exposes HTTP routes on port <N> (if grep'd from source)
 - <service-y> consumes messages from topic <T>
 
 ## Notes
+
 - <anything noteworthy: orphans, circular deps, unfamiliar tech, open questions>
 ```
 
