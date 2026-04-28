@@ -52,7 +52,8 @@ The goal is to finish this branch with an **`active` plan** — i.e. one a code 
 
 ## After completion
 
-Leave the worktree on disk if there's an open PR or follow-on work; otherwise tear it down with `git worktree remove` once the work item is `completed` and nothing else references it.
+- **Plan roll-up nudge.** If the just-completed work item had a `plan_id`, call `mcp__sapling__list_work({ plan_id })`. If every sibling row is `completed` or `cancelled` and the plan's status is still `active`, ask the user: "All work for plan #N is terminal. Mark the plan `completed`?" — on yes, `mcp__sapling__update_plan({ id: plan_id, status: 'completed' })`. On no, leave it alone. Skip the prompt entirely if any sibling is still `pending`/`claimed`/`failed`.
+- **Worktree cleanup.** Leave the worktree on disk if there's an open PR or follow-on work; otherwise tear it down with `git worktree remove` once the work item is `completed` and nothing else references it.
 
 ## Failure handling
 

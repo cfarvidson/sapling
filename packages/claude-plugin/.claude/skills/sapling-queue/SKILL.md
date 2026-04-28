@@ -61,8 +61,12 @@ ACTIVE PLANS
 
 ### Work actions
 
-- `cancel`: `mcp__sapling__cancel_work({ id, reason })`. Refuse if `status` is already `completed` — surface why.
+- `cancel`: `mcp__sapling__cancel_work({ id, reason })`. Refuse if `status` is already `completed` — surface why. After cancelling, run the plan roll-up nudge below.
 - `retry`: only valid for `failed` or `cancelled`. Read the original via `get_work`, then `enqueue_work` with the same `type`, `title`, `description_markdown`, `service_id`, `plan_id`, `branch`, `pr_url`. Tell the user the new id. Don't reuse the old row.
+
+### Plan roll-up nudge
+
+After any work-item lifecycle change (cancel here; complete in `/sapling:work`), if the affected item had a `plan_id` and every sibling in `list_work({ plan_id })` is now `completed` or `cancelled` and the plan is still `active`, ask: "All work for plan #N is terminal. Mark the plan `completed`?" — on yes, `update_plan({ id: plan_id, status: 'completed' })`. Skip silently if any sibling is still pending/claimed/failed.
 
 ## Notes
 
