@@ -7,6 +7,19 @@ description: Pull the next pending Sapling work item and execute it. Triggers on
 
 Claim the next pending work item from Sapling and execute it in this session.
 
+## GitHub-bound text: never use `#N` for Sapling ids
+
+Anything you write that will end up on GitHub — PR titles, PR bodies, PR comments, review notes posted to a PR, commit messages — MUST NOT use `#<n>` to reference a Sapling work item, plan, or artifact id. GitHub auto-links `#123` to issue/PR 123 in the current repo, producing broken links to unrelated PRs.
+
+Use one of these forms instead:
+
+- `Sapling work 6`, `Sapling plan 2`, `Sapling artifact 9`
+- `sapling work item 6`
+
+The `#N` form is fine in chat output to the user and inside Sapling artifacts (review_notes body, summaries) since neither passes through GitHub's auto-link logic. The rule only applies when the text crosses into GitHub.
+
+This rule is non-negotiable and applies to every type below.
+
 ## Steps
 
 1. Call MCP tool `mcp__sapling__claim_next_work` with `claimed_by` set to a stable agent label

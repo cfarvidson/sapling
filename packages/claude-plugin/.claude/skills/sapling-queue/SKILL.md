@@ -73,3 +73,4 @@ After any work-item lifecycle change (cancel here; complete in `/sapling:work`),
 - This skill never executes work. It only inspects state and flips lifecycle fields.
 - For service-level deep dives (recent artifacts, conventions), prefer `/sapling:context <service>`.
 - For raw counts only, `/sapling:status` is shorter.
+- **Sapling ids and GitHub.** When `retry` copies a `title`/`description_markdown` forward, scrub any `#<n>` references to Sapling ids and rewrite as `Sapling work N` / `Sapling plan N`. GitHub auto-links `#N` to issues/PRs, which leaks broken cross-links if the new work item later turns into a PR. Same rule applies anywhere in `/sapling:work` — see that skill's "GitHub-bound text" section.
