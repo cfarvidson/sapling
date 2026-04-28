@@ -62,7 +62,7 @@ Set `MCP_TOKEN=...` in `.env` to require a bearer token on `/mcp`. Then update y
 
 ## Layout
 
-- `packages/mcp-server/` — Node/TypeScript MCP server (Streamable HTTP transport, 20 tools)
+- `packages/mcp-server/` — Node/TypeScript MCP server (Streamable HTTP transport, 24 tools)
 - `packages/claude-plugin/` — `.mcp.json` template + skills
 
 ## Tests
