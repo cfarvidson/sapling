@@ -12,7 +12,7 @@ async function main(): Promise<void> {
   log.info('running migrations');
   await runMigrations(pool);
 
-  const { app } = createApp({ db: pool, token: config.MCP_TOKEN });
+  const { app } = createApp({ db: pool, token: config.MCP_TOKEN, log });
   app.listen(config.SAPLING_PORT, () => {
     log.info({ port: config.SAPLING_PORT }, 'sapling mcp-server listening');
   });

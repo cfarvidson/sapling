@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
+import pino from 'pino';
 import { createApp } from '../../src/server.js';
 import { runMigrations } from '../../src/migrate.js';
 import { startTestDb, type TestDb } from '../helpers/pg.js';
@@ -12,7 +13,7 @@ describe('GET /health', () => {
   beforeAll(async () => {
     db = await startTestDb();
     await runMigrations(db.pool);
-    const { app } = createApp({ db: db.pool, token: undefined });
+    const { app } = createApp({ db: db.pool, token: undefined, log: pino({ level: 'silent' }) });
     await new Promise<void>((resolve) => {
       server = app.listen(0, () => resolve());
     });

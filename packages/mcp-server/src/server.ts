@@ -4,12 +4,37 @@ import express, { type Express } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import type { Logger } from 'pino';
 import type { Db } from './db.js';
 import { registerAllTools } from './tools/register.js';
+
+type RegisterToolFn = McpServer['registerTool'];
+
+function instrumentMcpServer(mcp: McpServer, log: Logger): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const original: (...args: any[]) => any = mcp.registerTool.bind(mcp);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (mcp as any).registerTool = ((name: string, opts: unknown, handler: (...a: any[]) => any) => {
+    const wrapped = async (input: unknown, ctx: unknown) => {
+      const start = Date.now();
+      try {
+        const result = await handler(input, ctx);
+        const isError = !!(result as { isError?: boolean }).isError;
+        log.info({ tool: name, durationMs: Date.now() - start, ok: !isError }, 'tool_call');
+        return result;
+      } catch (err) {
+        log.error({ tool: name, durationMs: Date.now() - start, err }, 'tool_call_threw');
+        throw err;
+      }
+    };
+    return original(name, opts, wrapped);
+  }) as RegisterToolFn;
+}
 
 export interface CreateAppDeps {
   db: Db;
   token?: string; // optional bearer token; if set, required on /mcp
+  log: Logger;
 }
 
 export interface CreateAppResult {
@@ -17,8 +42,9 @@ export interface CreateAppResult {
   mcp: McpServer;
 }
 
-export function createApp({ db, token }: CreateAppDeps): CreateAppResult {
+export function createApp({ db, token, log }: CreateAppDeps): CreateAppResult {
   const mcp = new McpServer({ name: 'sapling', version: '0.1.0' });
+  instrumentMcpServer(mcp, log);
   registerAllTools(mcp, db);
 
   const app = express();
