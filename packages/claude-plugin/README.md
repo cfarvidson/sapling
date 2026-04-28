@@ -15,3 +15,4 @@ Slash commands and `.mcp.json` template for the Sapling MCP server.
 - `/sapling:enqueue <code|review> <description>` — drop a code or review task
 - `/sapling:status` — show queue health
 - `/sapling:context <service>` — load full context for a service
+- `/sapling:learn <app> [<path1> ...]` — research repos for an app; populate services, dependencies, and an architecture artifact
