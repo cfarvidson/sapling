@@ -14,5 +14,7 @@ Slash commands and `.mcp.json` template for the Sapling MCP server.
 - `/sapling:plan <description>` — drop a planning task into the queue
 - `/sapling:enqueue <code|review> <description>` — drop a code or review task
 - `/sapling:status` — show queue health
+- `/sapling:queue [<work|plan> <id> [action]]` — inspect the queue and run lifecycle actions (activate, archive, update, replace, cancel, retry)
+- `/sapling:rules [<service> | app <app-name>] [add|replace|remove|clear …]` — manage binding rules for an app or service
 - `/sapling:context <service>` — load full context for a service
 - `/sapling:learn <app> [<path1> ...]` — research repos for an app; populate services, dependencies, and an architecture artifact

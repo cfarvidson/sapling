@@ -1,0 +1,71 @@
+---
+name: sapling-queue
+description: Inspect and modify the Sapling queue — list pending work and non-archived plans, drill into a single work item or plan, and run lifecycle actions. Triggers on /sapling:queue.
+---
+
+# /sapling:queue
+
+Surface and edit Sapling state. `list_work` / `list_plans` show metadata only — drill into a single id to see the body, then act on it.
+
+## Forms
+
+```
+/sapling:queue                              — overview (active queue + open plans)
+/sapling:queue work <id>                    — show one work item
+/sapling:queue plan <id>                    — show one plan (full body)
+/sapling:queue plan <id> activate              — draft → active
+/sapling:queue plan <id> archive               — any → archived
+/sapling:queue plan <id> update "<instruction>"
+                                               — revise body/title from a free-form instruction
+/sapling:queue plan <id> replace               — replace the body wholesale (asks for new body)
+/sapling:queue work <id> cancel [<reason>]     — pending|claimed → cancelled
+/sapling:queue work <id> retry                 — re-enqueue a copy of a failed/cancelled item
+```
+
+## Steps
+
+### Overview (no args)
+
+1. Call in parallel:
+   - `mcp__sapling__list_work({ status: 'pending' })`
+   - `mcp__sapling__list_work({ status: 'claimed' })`
+   - `mcp__sapling__list_work({ status: 'failed' })`
+   - `mcp__sapling__list_plans({ status: 'draft' })`
+   - `mcp__sapling__list_plans({ status: 'active' })`
+2. Render four sections, latest first; each row shows `#id` `type/status` `title` and (for work) `service_id` / `plan_id` / `claimed_by`:
+
+```
+PENDING WORK
+  #4  review     IRIS-1636: …                  service=32 plan=1
+  …
+CLAIMED WORK         (in flight)
+FAILED WORK          (with failure_reason on its own line)
+DRAFT PLANS          ← these need user sign-off; nothing will execute against them
+ACTIVE PLANS
+```
+
+3. Footer: `Run /sapling:queue plan <id> activate` etc. so the next action is one keystroke away.
+
+### `work <id>` / `plan <id>`
+
+- `mcp__sapling__get_work({ id })` or `mcp__sapling__get_plan({ id })`.
+- Print all fields. For plans, print `body_markdown` verbatim (in a fenced block).
+- For work with a `plan_id`, also fetch that plan's status and warn if `draft` / `archived` / `completed` — those should not be executed against.
+
+### Plan actions
+
+- `activate`: `mcp__sapling__update_plan({ id, status: 'active' })`. Confirm the new status and offer: "Want me to enqueue a `code` work item for this plan?" — if yes, call `enqueue_work({ type: 'code', plan_id, service_id, title, description_markdown })` using a one-line title derived from the plan title.
+- `archive`: `update_plan({ id, status: 'archived' })`. Warn if there are pending/claimed work items linked to it (`list_work({ plan_id: id })`) and offer to cancel them.
+- `update "<instruction>"`: `mcp__sapling__get_plan({ id })`, apply the instruction to `body_markdown` and/or `title` in place (think "patch", not "rewrite"), show the diff, then `update_plan({ id, body_markdown, title? })` after confirmation. Status is unchanged unless the user asks.
+- `replace`: ask the user for the new full `body_markdown` (and optional new title), confirm, then `update_plan`. Use this when the existing plan is fundamentally wrong rather than just out of date.
+
+### Work actions
+
+- `cancel`: `mcp__sapling__cancel_work({ id, reason })`. Refuse if `status` is already `completed` — surface why.
+- `retry`: only valid for `failed` or `cancelled`. Read the original via `get_work`, then `enqueue_work` with the same `type`, `title`, `description_markdown`, `service_id`, `plan_id`, `branch`, `pr_url`. Tell the user the new id. Don't reuse the old row.
+
+## Notes
+
+- This skill never executes work. It only inspects state and flips lifecycle fields.
+- For service-level deep dives (recent artifacts, conventions), prefer `/sapling:context <service>`.
+- For raw counts only, `/sapling:status` is shorter.

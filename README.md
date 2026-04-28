@@ -28,6 +28,8 @@ Copy `packages/claude-plugin/.claude/skills/` into your project's `.claude/skill
 - `/sapling:plan <desc>` — enqueue a planning task
 - `/sapling:enqueue <code|review> <desc>` — enqueue a code or review task
 - `/sapling:status` — queue health
+- `/sapling:queue [<work|plan> <id> [action]]` — inspect the queue and run lifecycle actions
+- `/sapling:rules [<service> | app <app-name>] [add|replace|remove|clear …]` — manage binding rules for an app or service
 - `/sapling:context <service>` — load service context
 - `/sapling:learn <app> [<path1> ...]` — research repos for an app; populate services, dependencies, and an architecture artifact
 

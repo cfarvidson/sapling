@@ -18,7 +18,8 @@ Claim the next pending work item from Sapling and execute it in this session.
    - Branch name: use the work item's `branch` field if set; otherwise derive one (e.g. `sapling/work-<id>` or, when a Linear ticket is referenced, the ticket's `gitBranchName`).
    - Persist the chosen branch back on the work item (via the artifact you produce or by passing `branch` when enqueueing follow-on items) so reviewers can find it.
    - `cd` into the worktree for the rest of the steps. All edits, commits, and `gh` calls happen there.
-4. Branch on `type`:
+4. **Load binding rules.** If `service_id` is set, call `mcp__sapling__get_service` and `mcp__sapling__get_app({ id: service.app_id })`. Treat both `app.conventions` and `service.conventions` as non-negotiable rules for everything that follows — planning decisions, code style, where review notes get published, etc. If a rule conflicts with the task as written, halt and ask the user; do not silently violate. The user can manage these via `/sapling:rules`.
+5. Branch on `type`:
 
 ### type = 'plan'
 
@@ -31,8 +32,8 @@ Claim the next pending work item from Sapling and execute it in this session.
 
 ### type = 'code'
 
-- If `plan_id` is set, call `mcp__sapling__get_plan(id=plan_id)` and read the body.
-- If `service_id` is set, call `mcp__sapling__get_service(id=service_id)` to load conventions, repo URL, tech stack.
+- If `plan_id` is set, call `mcp__sapling__get_plan(id=plan_id)` and read the body. If status is `draft`, halt and surface the plan to the user — drafts are unverified, do not execute against them. (`completed`/`archived` plans should also halt with a "stale plan" warning.)
+- Service + app rules are already loaded in step 4 — the rules are binding for this work item.
 - Do the actual work inside the worktree from step 3 (filesystem, git). Sapling does not own the code.
 - For notable artifacts (review notes, draft snippets), call `mcp__sapling__attach_artifact` with `work_item_id`.
 - When done, optionally `mcp__sapling__enqueue_work(type='review', branch=..., pr_url=...)` — pass the worktree's branch.
