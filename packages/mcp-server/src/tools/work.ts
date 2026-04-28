@@ -95,6 +95,105 @@ export function registerWork(server: McpServer, db: Db): void {
   // claim_next_work / complete_work / fail_work / cancel_work added in Tasks 13-14.
 }
 
+export function registerWorkLifecycle(server: McpServer, db: Db): void {
+  server.registerTool(
+    'complete_work',
+    {
+      description:
+        'Mark a work item completed; optionally store a summary as an artifact, or link an existing artifact.',
+      inputSchema: {
+        id: z.number().int().positive(),
+        summary_markdown: z.string().optional(),
+        artifact_id: z.number().int().positive().optional(),
+      },
+    },
+    async ({ id, summary_markdown, artifact_id }) => {
+      try {
+        const client = await db.connect();
+        try {
+          await client.query('BEGIN');
+          const upd = await client.query(
+            `UPDATE work_items
+                SET status = 'completed', completed_at = now(), updated_at = now()
+              WHERE id = $1
+            RETURNING *`,
+            [id],
+          );
+          if (upd.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return errorToToolResult(new AppError('not_found', `work ${id} not found`));
+          }
+          const work = upd.rows[0];
+          if (summary_markdown) {
+            await client.query(
+              `INSERT INTO artifacts(kind, title, body_markdown, work_item_id)
+               VALUES ('summary', $1, $2, $3)`,
+              [`Summary: ${work.title}`, summary_markdown, id],
+            );
+          }
+          if (artifact_id) {
+            await client.query(`UPDATE artifacts SET work_item_id = $1 WHERE id = $2`, [
+              id,
+              artifact_id,
+            ]);
+          }
+          await client.query('COMMIT');
+          return ok(work);
+        } catch (err) {
+          await client.query('ROLLBACK');
+          throw err;
+        } finally {
+          client.release();
+        }
+      } catch (err) {
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      }
+    },
+  );
+
+  server.registerTool(
+    'fail_work',
+    {
+      description: 'Mark a work item failed with a reason. Failed items are not auto-retried.',
+      inputSchema: {
+        id: z.number().int().positive(),
+        reason: z.string().min(1),
+      },
+    },
+    async ({ id, reason }) => {
+      const { rows } = await db.query(
+        `UPDATE work_items SET status='failed', failure_reason=$2, updated_at=now()
+          WHERE id=$1 RETURNING *`,
+        [id, reason],
+      );
+      if (rows.length === 0)
+        return errorToToolResult(new AppError('not_found', `work ${id} not found`));
+      return ok(rows[0]);
+    },
+  );
+
+  server.registerTool(
+    'cancel_work',
+    {
+      description: 'Cancel a work item (soft delete equivalent).',
+      inputSchema: {
+        id: z.number().int().positive(),
+        reason: z.string().optional(),
+      },
+    },
+    async ({ id, reason }) => {
+      const { rows } = await db.query(
+        `UPDATE work_items SET status='cancelled', failure_reason=$2, updated_at=now()
+          WHERE id=$1 RETURNING *`,
+        [id, reason ?? null],
+      );
+      if (rows.length === 0)
+        return errorToToolResult(new AppError('not_found', `work ${id} not found`));
+      return ok(rows[0]);
+    },
+  );
+}
+
 const WorkTypeArr = z.array(WorkType).min(1);
 
 export function registerWorkClaim(server: McpServer, db: Db): void {

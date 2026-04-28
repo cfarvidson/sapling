@@ -71,3 +71,72 @@ describe('work queue tools (basic CRUD)', () => {
     expect(raw.isError).toBe(true);
   });
 });
+
+describe('complete / fail / cancel work', () => {
+  let db: TestDb;
+  let client: TestClient;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+
+  beforeEach(async () => {
+    await db.pool.query(
+      'TRUNCATE work_items, artifacts, plans, services, apps RESTART IDENTITY CASCADE',
+    );
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+  });
+
+  async function enqueueAndClaim() {
+    const item = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 't',
+      description_markdown: 'x',
+    })) as { id: number };
+    await client.call('claim_next_work', { claimed_by: 'tester' });
+    return item;
+  }
+
+  it('complete_work marks completed, sets completed_at', async () => {
+    const item = await enqueueAndClaim();
+    const completed = (await client.call('complete_work', { id: item.id })) as {
+      status: string;
+      completed_at: string;
+    };
+    expect(completed.status).toBe('completed');
+    expect(new Date(completed.completed_at).getTime()).toBeGreaterThan(0);
+  });
+
+  it.todo('complete_work with summary creates an artifact and links it');
+
+  it('fail_work sets status=failed and stores reason', async () => {
+    const item = await enqueueAndClaim();
+    const failed = (await client.call('fail_work', { id: item.id, reason: 'tests broke' })) as {
+      status: string;
+      failure_reason: string;
+    };
+    expect(failed.status).toBe('failed');
+    expect(failed.failure_reason).toBe('tests broke');
+  });
+
+  it('cancel_work sets status=cancelled', async () => {
+    const item = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 't',
+      description_markdown: 'x',
+    })) as { id: number };
+    const cancelled = (await client.call('cancel_work', {
+      id: item.id,
+      reason: 'no longer needed',
+    })) as { status: string };
+    expect(cancelled.status).toBe('cancelled');
+  });
+});

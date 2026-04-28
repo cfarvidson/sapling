@@ -78,11 +78,9 @@ export function createApp({ db, token }: CreateAppDeps): CreateAppResult {
       return;
     }
 
-    res
-      .status(400)
-      .json({
-        error: { code: 'invalid_request', message: 'missing session for non-initialize request' },
-      });
+    res.status(400).json({
+      error: { code: 'invalid_request', message: 'missing session for non-initialize request' },
+    });
   });
 
   return { app, mcp };
