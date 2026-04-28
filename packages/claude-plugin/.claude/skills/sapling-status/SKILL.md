@@ -26,5 +26,6 @@ FAILED:    <n>
 ```
 
 3. List the next 5 pending titles by `priority DESC, created_at ASC`.
-4. List any BLOCKED items with their `failure_reason` (used as the block reason).
-5. List any FAILED items with their `failure_reason`.
+4. List **every** CLAIMED item — `#id type title — claimed_by @ claimed_at` — so the user can see exactly what's in flight and who/where. Stale claims (>30 min, or `claimed_by` matching a host that's no longer active) are the most common cause of "the queue says nothing to do" — surfacing them lets the user kick a stuck worktree or unblock manually.
+5. List any BLOCKED items with their `failure_reason` (used as the block reason).
+6. List any FAILED items with their `failure_reason`.
