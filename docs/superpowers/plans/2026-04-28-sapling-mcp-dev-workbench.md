@@ -10,7 +10,7 @@
 
 - Node.js 22 LTS + TypeScript 5.x
 - pnpm workspaces (monorepo: `packages/mcp-server`, `packages/claude-plugin`)
-- `@modelcontextprotocol/server`, `@modelcontextprotocol/node`, `@modelcontextprotocol/express` (MCP SDK; Streamable HTTP transport)
+- `@modelcontextprotocol/sdk` (single stable v1.x package; subpath imports for server/client/transports)
 - `pg` (Postgres driver), Postgres 16 (docker image)
 - `zod` v4 (input validation)
 - `pino` (structured logging)
@@ -18,6 +18,17 @@
 - `express` + `cors` (HTTP layer for the MCP transport)
 
 **Spec deviation flagged here:** The spec's example `.mcp.json` uses `"type": "sse"` and `url: ".../sse"`. The current MCP TypeScript SDK has superseded the legacy SSE transport with Streamable HTTP. We will use `"type": "http"` and `url: "http://localhost:3333/mcp"` instead. Conceptually identical to the spec's intent (HTTP-served MCP in docker); only the wire protocol detail differs.
+
+**SDK packaging note:** Use the single stable package `@modelcontextprotocol/sdk@^1.29.0`, not the alpha split-packages (`@modelcontextprotocol/server`, `/node`, `/express`) which only exist as `2.0.0-alpha.x`. Imports use subpaths:
+
+- `import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'`
+- `import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'`
+- `import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js'`
+- `import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'`
+- `import { Client } from '@modelcontextprotocol/sdk/client/index.js'`
+- `import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'`
+
+There is **no `createMcpExpressApp`** in the stable SDK — use vanilla `express()` with `express.json()` body parsing. The `registerTool(name, config, handler)` API is identical (config is `{ description?, title?, inputSchema, outputSchema?, annotations? }`). Apply the same import substitution everywhere the plan body uses the alpha packages.
 
 ---
 
@@ -311,14 +322,12 @@ git commit -m "chore: add postgres service to docker-compose"
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "^1.0.0",
-    "@modelcontextprotocol/node": "^1.0.0",
-    "@modelcontextprotocol/express": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "pg": "^8.13.0",
     "pino": "^9.5.0",
-    "zod": "^4.0.0"
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
@@ -826,7 +835,7 @@ Expected: FAIL — module not found.
 `packages/mcp-server/src/errors.ts`:
 
 ```ts
-import type { CallToolResult } from '@modelcontextprotocol/server';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 export type ErrorCode = 'invalid_input' | 'not_found' | 'conflict' | 'claim_race' | 'internal';
 
@@ -945,9 +954,10 @@ Expected: FAIL — module not found.
 ```ts
 import { randomUUID } from 'node:crypto';
 import cors from 'cors';
-import { createMcpExpressApp } from '@modelcontextprotocol/express';
-import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
-import { McpServer, isInitializeRequest } from '@modelcontextprotocol/server';
+import express from 'express';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { Express } from 'express';
 import type { Db } from './db.js';
 import { registerAllTools } from './tools/register.js';
@@ -966,7 +976,8 @@ export function createApp({ db, token }: CreateAppDeps): CreateAppResult {
   const mcp = new McpServer({ name: 'sapling', version: '0.1.0' });
   registerAllTools(mcp, db);
 
-  const app = createMcpExpressApp();
+  const app = express();
+  app.use(express.json());
   app.use(
     cors({
       exposedHeaders: ['WWW-Authenticate', 'Mcp-Session-Id', 'Mcp-Protocol-Version'],
@@ -997,7 +1008,7 @@ export function createApp({ db, token }: CreateAppDeps): CreateAppResult {
   });
 
   // Stateful Streamable HTTP transport: one transport per session id.
-  const transports = new Map<string, NodeStreamableHTTPServerTransport>();
+  const transports = new Map<string, StreamableHTTPServerTransport>();
 
   app.post('/mcp', async (req, res) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
@@ -1008,7 +1019,7 @@ export function createApp({ db, token }: CreateAppDeps): CreateAppResult {
     }
 
     if (!sessionId && isInitializeRequest(req.body)) {
-      const transport = new NodeStreamableHTTPServerTransport({
+      const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid) => transports.set(sid, transport),
       });
@@ -1034,7 +1045,7 @@ export function createApp({ db, token }: CreateAppDeps): CreateAppResult {
 Create `packages/mcp-server/src/tools/register.ts`:
 
 ```ts
-import type { McpServer } from '@modelcontextprotocol/server';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Db } from '../db.js';
 
 export function registerAllTools(_server: McpServer, _db: Db): void {
@@ -1106,9 +1117,9 @@ The integration tests will create an MCP server in memory and call tools through
 `packages/mcp-server/test/helpers/mcp-client.ts`:
 
 ```ts
-import { Client } from '@modelcontextprotocol/server';
-import { InMemoryTransport } from '@modelcontextprotocol/server';
-import type { McpServer } from '@modelcontextprotocol/server';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export interface TestClient {
   call: (name: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -1153,7 +1164,7 @@ export async function connectInMemory(server: McpServer): Promise<TestClient> {
 
 ```ts
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/server';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { runMigrations } from '../../src/migrate.js';
 import { registerAllTools } from '../../src/tools/register.js';
 import { connectInMemory, type TestClient } from '../helpers/mcp-client.js';
@@ -1213,7 +1224,7 @@ Expected: FAIL — `Tool register_app not found` or similar.
 
 ```ts
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/server';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Db } from '../db.js';
 import { AppError, errorToToolResult, mapPgError } from '../errors.js';
 
@@ -1265,7 +1276,7 @@ export function registerProducts(server: McpServer, db: Db): void {
 `packages/mcp-server/src/tools/register.ts`:
 
 ```ts
-import type { McpServer } from '@modelcontextprotocol/server';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Db } from '../db.js';
 import { registerProducts } from './products.js';
 
@@ -1545,7 +1556,7 @@ export function registerServiceTools(server: McpServer, db: Db): void {
 Update `packages/mcp-server/src/tools/register.ts`:
 
 ```ts
-import type { McpServer } from '@modelcontextprotocol/server';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Db } from '../db.js';
 import { registerProducts, registerServiceTools } from './products.js';
 
@@ -1586,7 +1597,7 @@ git commit -m "feat(tools): register_service, list_services, get_service, update
 
 ```ts
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/server';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { runMigrations } from '../../src/migrate.js';
 import { registerAllTools } from '../../src/tools/register.js';
 import { connectInMemory, type TestClient } from '../helpers/mcp-client.js';
@@ -1686,7 +1697,7 @@ Expected: FAIL — tools missing.
 
 ```ts
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/server';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Db } from '../db.js';
 import { AppError, errorToToolResult, mapPgError } from '../errors.js';
 
@@ -1857,7 +1868,7 @@ git commit -m "feat(tools): create_plan, get_plan, list_plans, update_plan"
 
 ```ts
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/server';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { runMigrations } from '../../src/migrate.js';
 import { registerAllTools } from '../../src/tools/register.js';
 import { connectInMemory, type TestClient } from '../helpers/mcp-client.js';
@@ -1942,7 +1953,7 @@ Expected: FAIL — tools missing.
 
 ```ts
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/server';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Db } from '../db.js';
 import { AppError, errorToToolResult, mapPgError } from '../errors.js';
 
@@ -2075,7 +2086,7 @@ git commit -m "feat(tools): enqueue_work, get_work, list_work"
 
 ```ts
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/server';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { runMigrations } from '../../src/migrate.js';
 import { registerAllTools } from '../../src/tools/register.js';
 import { connectInMemory, type TestClient } from '../helpers/mcp-client.js';
@@ -2477,7 +2488,7 @@ git commit -m "feat(tools): complete_work, fail_work, cancel_work"
 
 ```ts
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { McpServer } from '@modelcontextprotocol/server';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { runMigrations } from '../../src/migrate.js';
 import { registerAllTools } from '../../src/tools/register.js';
 import { connectInMemory, type TestClient } from '../helpers/mcp-client.js';
@@ -2576,7 +2587,7 @@ Expected: FAIL — tools not registered.
 
 ```ts
 import { z } from 'zod';
-import type { McpServer } from '@modelcontextprotocol/server';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Db } from '../db.js';
 import { AppError, errorToToolResult, mapPgError } from '../errors.js';
 
