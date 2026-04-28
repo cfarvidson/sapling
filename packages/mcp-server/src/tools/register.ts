@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Db } from '../db.js';
+import { registerProducts } from './products.js';
 
-export function registerAllTools(_server: McpServer, _db: Db): void {
-  // Tool families registered in Tasks 9–15.
+export function registerAllTools(server: McpServer, db: Db): void {
+  registerProducts(server, db);
 }
