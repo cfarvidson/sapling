@@ -115,7 +115,17 @@ describe('complete / fail / cancel work', () => {
     expect(new Date(completed.completed_at).getTime()).toBeGreaterThan(0);
   });
 
-  it.todo('complete_work with summary creates an artifact and links it');
+  it('complete_work with summary creates an artifact and links it', async () => {
+    const item = await enqueueAndClaim();
+    const completed = (await client.call('complete_work', {
+      id: item.id,
+      summary_markdown: '# done\nstuff',
+    })) as { id: number };
+    const artifacts = (await client.call('list_artifacts', {
+      work_item_id: completed.id,
+    })) as Array<unknown>;
+    expect(artifacts).toHaveLength(1);
+  });
 
   it('fail_work sets status=failed and stores reason', async () => {
     const item = await enqueueAndClaim();

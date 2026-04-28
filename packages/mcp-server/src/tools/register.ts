@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Db } from '../db.js';
+import { registerArtifacts } from './artifacts.js';
 import { registerPlans } from './plans.js';
 import { registerProducts, registerServiceTools } from './products.js';
 import { registerWork, registerWorkClaim, registerWorkLifecycle } from './work.js';
@@ -11,4 +12,5 @@ export function registerAllTools(server: McpServer, db: Db): void {
   registerWork(server, db);
   registerWorkClaim(server, db);
   registerWorkLifecycle(server, db);
+  registerArtifacts(server, db);
 }
