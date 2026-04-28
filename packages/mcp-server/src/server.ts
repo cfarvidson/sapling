@@ -39,14 +39,16 @@ export interface CreateAppDeps {
 
 export interface CreateAppResult {
   app: Express;
-  mcp: McpServer;
 }
 
-export function createApp({ db, token, log }: CreateAppDeps): CreateAppResult {
+function buildMcpServer(db: Db, log: Logger): McpServer {
   const mcp = new McpServer({ name: 'sapling', version: '0.1.0' });
   instrumentMcpServer(mcp, log);
   registerAllTools(mcp, db);
+  return mcp;
+}
 
+export function createApp({ db, token, log }: CreateAppDeps): CreateAppResult {
   const app = express();
   app.use(express.json());
   app.use(
@@ -99,6 +101,7 @@ export function createApp({ db, token, log }: CreateAppDeps): CreateAppResult {
       transport.onclose = () => {
         if (transport.sessionId) transports.delete(transport.sessionId);
       };
+      const mcp = buildMcpServer(db, log);
       await mcp.connect(transport);
       await transport.handleRequest(req, res, req.body);
       return;
@@ -109,5 +112,5 @@ export function createApp({ db, token, log }: CreateAppDeps): CreateAppResult {
     });
   });
 
-  return { app, mcp };
+  return { app };
 }
