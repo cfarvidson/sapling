@@ -3,6 +3,7 @@ import type { Db } from '../db.js';
 import { registerArtifacts } from './artifacts.js';
 import { registerPlans } from './plans.js';
 import { registerProducts, registerServiceTools } from './products.js';
+import { registerRunnerConfig } from './runner_config.js';
 import { registerWork, registerWorkClaim, registerWorkLifecycle } from './work.js';
 
 export function registerAllTools(server: McpServer, db: Db): void {
@@ -13,4 +14,5 @@ export function registerAllTools(server: McpServer, db: Db): void {
   registerWorkClaim(server, db);
   registerWorkLifecycle(server, db);
   registerArtifacts(server, db);
+  registerRunnerConfig(server, db);
 }
