@@ -1,4 +1,4 @@
-.PHONY: up down logs psql test nuke build
+.PHONY: up down logs psql test nuke build runner
 
 up:
 	docker compose up -d
@@ -17,6 +17,10 @@ build:
 
 test:
 	pnpm --filter mcp-server test
+	pnpm --filter sapling-runner test
+
+runner:
+	pnpm --filter sapling-runner dev
 
 nuke:
 	@echo "This will delete ./data/postgres. Press Ctrl-C to cancel."

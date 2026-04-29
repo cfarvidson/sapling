@@ -75,6 +75,27 @@ Set `MCP_TOKEN=...` in `.env` to require a bearer token on `/mcp`. Then update y
 
 - `packages/mcp-server/` — Node/TypeScript MCP server (Streamable HTTP transport, 24 tools)
 - `packages/claude-plugin/` — `.mcp.json` template + skills
+- `packages/runner/` — `sapling-runner` daemon: polls the queue, spawns coding-agent subprocesses up to `max_concurrent`, reaps stuck claims each tick
+
+## Autonomous mode
+
+`sapling-runner` is a thin polling daemon that turns a Sapling queue into autonomous coding-agent runs. Each tick it reaps stuck claims, reads the runner config, and spawns up to `max_concurrent - running` agents via `bash -lc <agent_command>`. Each spawned agent self-claims via the existing `claim_next_work` MCP tool.
+
+```bash
+# Make sure mcp-server is up (`make up`).
+make runner                            # foreground; SIGINT/SIGTERM = graceful shutdown
+pnpm --filter sapling-runner dev -- --once          # one tick then exit
+pnpm --filter sapling-runner dev -- --max-spawn 5   # exit after 5 spawns
+```
+
+The runner reads from `SAPLING_MCP_URL` (default `http://127.0.0.1:3333/mcp`) and `MCP_TOKEN` (optional). Tunable settings live in the `runner_config` singleton table and are reloaded each tick — change them via the MCP `update_runner_config` tool, no restart needed:
+
+```text
+update_runner_config({ max_concurrent: 4, poll_interval_ms: 15000 })
+update_runner_config({ agent_command: "claude --dangerously-skip-permissions -p '/sapling:work'" })
+```
+
+Defaults: `max_concurrent=1`, `poll_interval_ms=30000`, `claim_ttl_ms=7200000` (2h), `max_claim_attempts=5`. Stuck claims older than `claim_ttl_ms` are reaped on the next tick (back to `pending`, or `failed` if `attempt_count` reached `max_claim_attempts`).
 
 ## Tests
 

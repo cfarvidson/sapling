@@ -6,8 +6,10 @@
   "scripts": {
     "lint": "eslint --ext .ts packages",
     "format": "prettier --write .",
-    "test": "pnpm --filter mcp-server test",
-    "build": "pnpm --filter mcp-server build"
+    "test": "pnpm --filter mcp-server test && pnpm --filter sapling-runner test",
+    "build": "pnpm --filter mcp-server build && pnpm --filter sapling-runner build",
+    "runner:start": "pnpm --filter sapling-runner dev",
+    "runner:test": "pnpm --filter sapling-runner test"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.0.0",
