@@ -74,7 +74,7 @@ Set `MCP_TOKEN=...` in `.env` to require a bearer token on `/mcp`. Then update y
 
 ## Layout
 
-- `packages/mcp-server/` — Node/TypeScript MCP server (Streamable HTTP transport, 26 tools)
+- `packages/mcp-server/` — Node/TypeScript MCP server (Streamable HTTP transport, 36 tools)
 - `packages/claude-plugin/` — `.mcp.json` template + skills
 - `packages/runner/` — `sapling-runner` daemon: polls the queue, spawns coding-agent subprocesses up to `max_concurrent`, reaps stuck claims each tick
 
@@ -121,6 +121,28 @@ If you want proactive nudging, pair with `/loop`:
 ```
 
 Tradeoff: pull-based means you have to check on your own cadence, but it removes every transport-flakiness failure mode (delivery, permissions, auth) that an outbound notifier would introduce. If proactive notification proves necessary, it ships as a separate phase later.
+
+## Teams
+
+A **team** lets one work item be executed by a coordinated lead + specialists instead of a solo agent. Teams are first-class rows: create them with `/sapling:teams`, optionally scope them to an app, and attach them to work items either explicitly or via per-(app, work_type) defaults.
+
+```text
+/sapling:teams                                  # list teams grouped by app
+/sapling:teams create code-review               # interactive: lead prompt + roles
+/sapling:teams set-default code code-review     # auto-attach to all new code items globally
+/sapling:teams set-default code iris-code-review app iris  # per-app override
+```
+
+When the runner spawns `/sapling:work` for an item with `team_id`, the agent enters **lead mode**: it loads the team, prepends `lead_prompt_md` to its operating instructions, and dispatches specialists via Claude Code's `Agent` tool (with the role's `subagent_type` if pinned, else `general-purpose`). The lead remains the sole writer — specialists return text; the lead decides what gets committed.
+
+A few invariants worth knowing:
+
+- **Resolution is at enqueue time.** When you call `enqueue_work`, the server picks `team_id` once (explicit > per-app default > global default > null) and stores it on the row. Changing a default later does not retroactively reroute pending items.
+- **`max_concurrent` semantics are unchanged.** A team is one process from the runner's point of view — the in-process specialists do not eat queue slots.
+- **Solo mode is unchanged.** Items without `team_id` run exactly as they always have.
+- **Deleting a team is non-destructive.** `work_items.team_id` is `ON DELETE SET NULL`, so referencing items revert to solo agent execution rather than failing.
+
+See `docs/superpowers/specs/2026-04-29-agent-teams-design.md` for the full design rationale.
 
 ## Tests
 
