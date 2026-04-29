@@ -328,3 +328,70 @@ describe('team_roles tools', () => {
     expect(left.rowCount).toBe(0);
   });
 });
+
+describe('team_defaults tools', () => {
+  let db: TestDb;
+  let client: TestClient;
+  let teamId: number;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+    const team = (await client.call('create_team', {
+      name: 't',
+      lead_prompt_md: 'lead',
+      roles: [{ name: 'r', description_md: 'd' }],
+    })) as { id: number };
+    teamId = team.id;
+  });
+
+  it('set_team_default upserts a global default per work_type', async () => {
+    const a = (await client.call('set_team_default', {
+      work_type: 'code',
+      team_id: teamId,
+    })) as { app_id: number | null; work_type: string; team_id: number };
+    expect(a).toMatchObject({ app_id: null, work_type: 'code', team_id: teamId });
+
+    // Calling again with the same key updates the row, doesn't create a duplicate.
+    await client.call('set_team_default', { work_type: 'code', team_id: teamId });
+    const rows = await db.pool.query(
+      `SELECT count(*)::int AS n FROM team_defaults WHERE app_id IS NULL AND work_type='code'`,
+    );
+    expect(rows.rows[0].n).toBe(1);
+  });
+
+  it('set_team_default supports per-app defaults distinct from globals', async () => {
+    const app = (await client.call('register_app', { name: 'iris' })) as { id: number };
+    await client.call('set_team_default', { work_type: 'code', team_id: teamId });
+    await client.call('set_team_default', { work_type: 'code', team_id: teamId, app_id: app.id });
+    const rows = await db.pool.query(
+      `SELECT app_id FROM team_defaults WHERE work_type='code' ORDER BY app_id NULLS FIRST`,
+    );
+    expect(rows.rows.map((r) => r.app_id)).toEqual([null, app.id]);
+  });
+
+  it('clear_team_default removes the matching row', async () => {
+    await client.call('set_team_default', { work_type: 'code', team_id: teamId });
+    await client.call('clear_team_default', { work_type: 'code' });
+    const rows = await db.pool.query(`SELECT id FROM team_defaults`);
+    expect(rows.rowCount).toBe(0);
+  });
+
+  it('clear_team_default returns not_found when there is nothing to clear', async () => {
+    const raw = await client.callRaw('clear_team_default', { work_type: 'code' });
+    expect(raw.isError).toBe(true);
+    expect(JSON.parse(raw.content[0].text).error.code).toBe('not_found');
+  });
+});

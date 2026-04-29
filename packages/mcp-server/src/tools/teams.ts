@@ -290,4 +290,69 @@ export function registerTeams(server: McpServer, db: Db): void {
       return ok({ id });
     },
   );
+
+  const WorkTypeForDefault = z.enum(['plan', 'code', 'review']);
+
+  server.registerTool(
+    'set_team_default',
+    {
+      description:
+        'Upsert the default team for (app_id, work_type). Pass app_id to scope per app, or omit for the global default.',
+      inputSchema: {
+        work_type: WorkTypeForDefault,
+        team_id: z.number().int().positive(),
+        app_id: z.number().int().positive().optional(),
+      },
+    },
+    async ({ work_type, team_id, app_id }) => {
+      try {
+        const { rows } = app_id
+          ? await db.query(
+              `INSERT INTO team_defaults(app_id, work_type, team_id)
+               VALUES ($1, $2, $3)
+               ON CONFLICT ON CONSTRAINT team_defaults_uniq
+               DO UPDATE SET team_id = EXCLUDED.team_id
+               RETURNING *`,
+              [app_id, work_type, team_id],
+            )
+          : await db.query(
+              `INSERT INTO team_defaults(app_id, work_type, team_id)
+               VALUES (NULL, $1, $2)
+               ON CONFLICT ON CONSTRAINT team_defaults_uniq
+               DO UPDATE SET team_id = EXCLUDED.team_id
+               RETURNING *`,
+              [work_type, team_id],
+            );
+        return ok(rows[0]);
+      } catch (err) {
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      }
+    },
+  );
+
+  server.registerTool(
+    'clear_team_default',
+    {
+      description:
+        'Remove a default. Pass app_id to clear a per-app default; omit for the global default.',
+      inputSchema: {
+        work_type: WorkTypeForDefault,
+        app_id: z.number().int().positive().optional(),
+      },
+    },
+    async ({ work_type, app_id }) => {
+      const { rows } = app_id
+        ? await db.query(
+            `DELETE FROM team_defaults WHERE app_id = $1 AND work_type = $2 RETURNING id`,
+            [app_id, work_type],
+          )
+        : await db.query(
+            `DELETE FROM team_defaults WHERE app_id IS NULL AND work_type = $1 RETURNING id`,
+            [work_type],
+          );
+      if (rows.length === 0)
+        return errorToToolResult(new AppError('not_found', `no default to clear`));
+      return ok({ cleared: true });
+    },
+  );
 }
