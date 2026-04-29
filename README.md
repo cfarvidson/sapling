@@ -88,12 +88,15 @@ pnpm --filter sapling-runner dev -- --once          # one tick then exit
 pnpm --filter sapling-runner dev -- --max-spawn 5   # exit after 5 spawns
 ```
 
-The runner reads from `SAPLING_MCP_URL` (default `http://127.0.0.1:3333/mcp`) and `MCP_TOKEN` (optional). Tunable settings live in the `runner_config` singleton table and are reloaded each tick — change them via the MCP `update_runner_config` tool, no restart needed:
+The runner reads from `SAPLING_MCP_URL` (default `http://127.0.0.1:3333/mcp`) and `MCP_TOKEN` (optional). Tunable settings live in the `runner_config` singleton table and are read via `get_runner_config` at the start of each tick. Change them with the MCP `update_runner_config` tool:
 
 ```text
-update_runner_config({ max_concurrent: 4, poll_interval_ms: 15000 })
+update_runner_config({ max_concurrent: 4 })
 update_runner_config({ agent_command: "claude --dangerously-skip-permissions -p '/sapling:work'" })
+update_runner_config({ poll_interval_ms: 15000 })   # requires runner restart
 ```
+
+`agent_command` and `max_concurrent` take effect on the next tick. `poll_interval_ms` is read once at startup to arm the polling timer and requires a runner restart to apply.
 
 Defaults: `max_concurrent=1`, `poll_interval_ms=30000`, `claim_ttl_ms=7200000` (2h), `max_claim_attempts=5`. Stuck claims older than `claim_ttl_ms` are reaped on the next tick (back to `pending`, or `failed` if `attempt_count` reached `max_claim_attempts`).
 

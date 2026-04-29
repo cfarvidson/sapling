@@ -47,6 +47,21 @@ async function main(): Promise<void> {
   const running = new Set<SpawnedAgent>();
   let totalSpawned = 0;
   let stopping = false;
+  let interval: NodeJS.Timeout | null = null;
+
+  const shutdown = async (sig: string): Promise<void> => {
+    if (stopping && interval === null) return;
+    stopping = true;
+    log('shutdown', { sig, running: running.size });
+    if (interval) {
+      clearInterval(interval);
+      interval = null;
+    }
+    await waitForChildren(running, Date.now() + SHUTDOWN_GRACE_MS);
+    for (const child of running) child.kill('SIGKILL');
+    await mcp.close();
+    process.exit(0);
+  };
 
   const doTick = async (): Promise<void> => {
     if (stopping) return;
@@ -54,36 +69,28 @@ async function main(): Promise<void> {
       const r = await tick({ mcp, spawn: spawnAgent, env: process.env, running, log });
       log('tick', { ...r });
       totalSpawned += r.spawned;
-      if (args.maxSpawn !== null && totalSpawned >= args.maxSpawn) stopping = true;
+      if (args.maxSpawn !== null && totalSpawned >= args.maxSpawn) {
+        log('max_spawn_reached', { totalSpawned, maxSpawn: args.maxSpawn });
+        void shutdown('max-spawn');
+      }
     } catch (err) {
       log('tick_error', { err: String(err) });
     }
   };
+
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 
   const cfg = await mcp.getRunnerConfig();
   log('start', { url, poll_interval_ms: cfg.poll_interval_ms, max_concurrent: cfg.max_concurrent });
 
   await doTick();
 
-  let interval: NodeJS.Timeout | null = null;
   if (!args.once && !stopping) {
     interval = setInterval(() => {
       void doTick();
     }, cfg.poll_interval_ms);
   }
-
-  const shutdown = async (sig: string): Promise<void> => {
-    stopping = true;
-    log('shutdown', { sig, running: running.size });
-    if (interval) clearInterval(interval);
-    await waitForChildren(running, Date.now() + SHUTDOWN_GRACE_MS);
-    for (const child of running) child.kill('SIGKILL');
-    await mcp.close();
-    process.exit(0);
-  };
-
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
-  process.on('SIGINT', () => void shutdown('SIGINT'));
 
   if (args.once) {
     await waitForChildren(running, Date.now() + SHUTDOWN_GRACE_MS);
