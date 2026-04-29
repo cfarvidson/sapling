@@ -38,6 +38,12 @@ describe('spawnAgent', () => {
     expect(result.code).toBe(0);
   });
 
+  it('injects SAPLING_RUNNER=1 so the spawned agent knows it is non-interactive', async () => {
+    const child = spawnAgent('test "$SAPLING_RUNNER" = "1"', { ...process.env });
+    const result = await child.onExit;
+    expect(result.code).toBe(0);
+  });
+
   it('SIGKILL reaches grandchildren of the bash wrapper via process group', async () => {
     // bash forks `sleep 30` as a background grandchild and then waits. When the
     // runner sends SIGKILL, both bash and the backgrounded sleep must die — the

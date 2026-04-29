@@ -18,10 +18,14 @@ export type SpawnFn = (command: string, env: NodeJS.ProcessEnv) => SpawnedAgent;
  * the whole group (`-pid`) so descendants of the bash wrapper (the actual
  * `claude` agent that bash exec'd or forked) terminate with it instead of
  * being orphaned to launchd/init when the runner shuts down.
+ *
+ * `SAPLING_RUNNER=1` is injected so the spawned agent can detect it has no
+ * interactive human and must use `mcp__sapling__request_human_input` instead
+ * of asking plain-text questions that nothing will ever read.
  */
 export const spawnAgent: SpawnFn = (command, env) => {
   const child = spawn('bash', ['-lc', command], {
-    env,
+    env: { ...env, SAPLING_RUNNER: '1' },
     stdio: 'inherit',
     detached: true,
   });

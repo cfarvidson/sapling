@@ -1,6 +1,6 @@
 {
   "name": "sapling",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Postgres-backed knowledge store and typed work queue for Claude Code. Adds /sapling:plan, /sapling:work, /sapling:queue, /sapling:rules, /sapling:status, /sapling:enqueue, /sapling:context, /sapling:learn, and /sapling:human slash commands plus a bundled MCP server connection.",
   "author": {
     "name": "Carl-Fredrik Arvidson",
