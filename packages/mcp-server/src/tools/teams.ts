@@ -204,4 +204,90 @@ export function registerTeams(server: McpServer, db: Db): void {
       return ok({ id });
     },
   );
+
+  server.registerTool(
+    'add_team_role',
+    {
+      description: 'Add a single role to an existing team.',
+      inputSchema: {
+        team_id: z.number().int().positive(),
+        name: z.string().min(1),
+        description_md: z.string().min(1),
+        subagent_type: z.string().min(1).optional(),
+        ordinal: z.number().int().nonnegative().optional(),
+      },
+    },
+    async (input) => {
+      try {
+        const { rows } = await db.query(
+          `INSERT INTO team_roles(team_id, name, description_md, subagent_type, ordinal)
+           VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+          [
+            input.team_id,
+            input.name,
+            input.description_md,
+            input.subagent_type ?? null,
+            input.ordinal ?? 0,
+          ],
+        );
+        return ok(rows[0]);
+      } catch (err) {
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      }
+    },
+  );
+
+  server.registerTool(
+    'update_team_role',
+    {
+      description: 'Patch a team role.',
+      inputSchema: {
+        id: z.number().int().positive(),
+        name: z.string().min(1).optional(),
+        description_md: z.string().min(1).optional(),
+        subagent_type: z.string().min(1).nullable().optional(),
+        ordinal: z.number().int().nonnegative().optional(),
+      },
+    },
+    async ({ id, ...patch }) => {
+      const fields = (Object.keys(patch) as Array<keyof typeof patch>).filter(
+        (k) => patch[k] !== undefined,
+      );
+      if (fields.length === 0)
+        return errorToToolResult(new AppError('invalid_input', 'no fields to update'));
+      const sets: string[] = [];
+      const values: unknown[] = [];
+      let i = 1;
+      for (const f of fields) {
+        sets.push(`${f} = $${i++}`);
+        values.push(patch[f]);
+      }
+      values.push(id);
+      try {
+        const { rows } = await db.query(
+          `UPDATE team_roles SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
+          values,
+        );
+        if (rows.length === 0)
+          return errorToToolResult(new AppError('not_found', `team_role ${id} not found`));
+        return ok(rows[0]);
+      } catch (err) {
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      }
+    },
+  );
+
+  server.registerTool(
+    'remove_team_role',
+    {
+      description: 'Delete a team role by id.',
+      inputSchema: { id: z.number().int().positive() },
+    },
+    async ({ id }) => {
+      const { rows } = await db.query(`DELETE FROM team_roles WHERE id = $1 RETURNING id`, [id]);
+      if (rows.length === 0)
+        return errorToToolResult(new AppError('not_found', `team_role ${id} not found`));
+      return ok({ id });
+    },
+  );
 }

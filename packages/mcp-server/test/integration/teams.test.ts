@@ -249,3 +249,82 @@ describe('teams tools — list / update / delete', () => {
     expect(after.rows[0].team_id).toBeNull();
   });
 });
+
+describe('team_roles tools', () => {
+  let db: TestDb;
+  let client: TestClient;
+  let teamId: number;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+    const team = (await client.call('create_team', {
+      name: 't',
+      lead_prompt_md: 'lead',
+      roles: [{ name: 'initial', description_md: 'd' }],
+    })) as { id: number };
+    teamId = team.id;
+  });
+
+  it('add_team_role appends a role and returns it', async () => {
+    const role = (await client.call('add_team_role', {
+      team_id: teamId,
+      name: 'security',
+      description_md: 'auth review',
+      subagent_type: 'compound-engineering:review:security-reviewer',
+      ordinal: 5,
+    })) as { name: string; ordinal: number };
+    expect(role).toMatchObject({
+      name: 'security',
+      ordinal: 5,
+      subagent_type: 'compound-engineering:review:security-reviewer',
+    });
+  });
+
+  it('add_team_role rejects duplicate name within a team', async () => {
+    const raw = await client.callRaw('add_team_role', {
+      team_id: teamId,
+      name: 'initial',
+      description_md: 'dup',
+    });
+    expect(raw.isError).toBe(true);
+    expect(JSON.parse(raw.content[0].text).error.code).toBe('conflict');
+  });
+
+  it('update_team_role patches scalars', async () => {
+    const role = (await client.call('add_team_role', {
+      team_id: teamId,
+      name: 'r2',
+      description_md: 'old',
+    })) as { id: number };
+    const updated = (await client.call('update_team_role', {
+      id: role.id,
+      description_md: 'new',
+      ordinal: 9,
+    })) as { description_md: string; ordinal: number };
+    expect(updated).toMatchObject({ description_md: 'new', ordinal: 9 });
+  });
+
+  it('remove_team_role deletes by id', async () => {
+    const role = (await client.call('add_team_role', {
+      team_id: teamId,
+      name: 'r3',
+      description_md: 'd',
+    })) as { id: number };
+    await client.call('remove_team_role', { id: role.id });
+    const left = await db.pool.query(`SELECT id FROM team_roles WHERE id = $1`, [role.id]);
+    expect(left.rowCount).toBe(0);
+  });
+});
