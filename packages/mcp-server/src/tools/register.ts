@@ -5,6 +5,7 @@ import { registerHumanInput } from './human_input.js';
 import { registerPlans } from './plans.js';
 import { registerProducts, registerServiceTools } from './products.js';
 import { registerRunnerConfig } from './runner_config.js';
+import { registerTeams } from './teams.js';
 import { registerWork, registerWorkClaim, registerWorkLifecycle } from './work.js';
 
 export function registerAllTools(server: McpServer, db: Db): void {
@@ -17,4 +18,5 @@ export function registerAllTools(server: McpServer, db: Db): void {
   registerArtifacts(server, db);
   registerRunnerConfig(server, db);
   registerHumanInput(server, db);
+  registerTeams(server, db);
 }
