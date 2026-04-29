@@ -144,7 +144,11 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
           await client.query('BEGIN');
           const upd = await client.query(
             `UPDATE work_items
-                SET status = 'completed', completed_at = now(), updated_at = now()
+                SET status = 'completed',
+                    completed_at = now(),
+                    claim_expires_at = NULL,
+                    next_retry_at = NULL,
+                    updated_at = now()
               WHERE id = $1
             RETURNING *`,
             [id],
@@ -213,7 +217,12 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
     },
     async ({ id, reason }) => {
       const { rows } = await db.query(
-        `UPDATE work_items SET status='cancelled', failure_reason=$2, updated_at=now()
+        `UPDATE work_items
+            SET status='cancelled',
+                failure_reason=$2,
+                claim_expires_at=NULL,
+                next_retry_at=NULL,
+                updated_at=now()
           WHERE id=$1 RETURNING *`,
         [id, reason ?? null],
       );
@@ -235,7 +244,12 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
     },
     async ({ id, reason }) => {
       const { rows } = await db.query(
-        `UPDATE work_items SET status='blocked', failure_reason=$2, updated_at=now()
+        `UPDATE work_items
+            SET status='blocked',
+                failure_reason=$2,
+                claim_expires_at=NULL,
+                next_retry_at=NULL,
+                updated_at=now()
           WHERE id=$1 AND status IN ('pending','claimed','blocked','failed') RETURNING *`,
         [id, reason],
       );
@@ -303,19 +317,29 @@ export function registerWorkClaim(server: McpServer, db: Db): void {
       }
 
       const { rows } = await db.query(
-        `WITH next AS (
+        `WITH cfg AS (
+           SELECT max_claim_attempts, claim_ttl_ms FROM runner_config WHERE id = 1
+         ),
+         next AS (
            SELECT w.id FROM work_items w
             LEFT JOIN services s ON s.id = w.service_id
             WHERE w.status = 'pending'
               AND ($1::work_type[] IS NULL OR w.type = ANY($1))
               AND ($2::int IS NULL OR w.service_id = $2)
               AND ($3::int IS NULL OR s.app_id = $3)
+              AND (w.next_retry_at IS NULL OR w.next_retry_at <= now())
+              AND w.attempt_count < (SELECT max_claim_attempts FROM cfg)
             ORDER BY w.priority DESC, w.created_at ASC
             FOR UPDATE OF w SKIP LOCKED
             LIMIT 1
          )
          UPDATE work_items w
-            SET status = 'claimed', claimed_at = now(), claimed_by = $4, updated_at = now()
+            SET status = 'claimed',
+                claimed_at = now(),
+                claimed_by = $4,
+                claim_expires_at = now() + ((SELECT claim_ttl_ms FROM cfg) || ' milliseconds')::interval,
+                attempt_count = w.attempt_count + 1,
+                updated_at = now()
            FROM next
           WHERE w.id = next.id
          RETURNING w.*`,

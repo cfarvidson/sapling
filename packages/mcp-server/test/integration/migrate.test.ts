@@ -18,15 +18,25 @@ describe('migrate', () => {
        WHERE table_schema='public' ORDER BY table_name`,
     );
     const tables = rows.map((r) => r.table_name);
-    expect(tables).toEqual(['_migrations', 'apps', 'artifacts', 'plans', 'services', 'work_items']);
+    expect(tables).toEqual([
+      '_migrations',
+      'apps',
+      'artifacts',
+      'plans',
+      'runner_config',
+      'services',
+      'work_items',
+    ]);
   });
 
   it('is idempotent — running twice does not fail or duplicate', async () => {
-    // First call already ran above. Run again.
-    await runMigrations(db.pool);
-    const { rows } = await db.pool.query<{ count: string }>(
+    const first = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text as count FROM _migrations`,
     );
-    expect(rows[0].count).toBe('1');
+    await runMigrations(db.pool);
+    const second = await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text as count FROM _migrations`,
+    );
+    expect(second.rows[0].count).toBe(first.rows[0].count);
   });
 });
