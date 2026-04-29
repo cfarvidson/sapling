@@ -111,4 +111,97 @@ export function registerTeams(server: McpServer, db: Db): void {
       return ok(full);
     },
   );
+
+  server.registerTool(
+    'list_teams',
+    {
+      description:
+        'List teams with role counts. Filter by app_id or app_name to scope to one app (use neither to see global + all apps).',
+      inputSchema: {
+        app_id: z.number().int().positive().optional(),
+        app_name: z.string().min(1).optional(),
+      },
+    },
+    async ({ app_id, app_name }) => {
+      let resolved: number | null = app_id ?? null;
+      if (resolved === null && app_name) {
+        const lookup = await db.query<{ id: number }>(`SELECT id FROM apps WHERE name = $1`, [
+          app_name,
+        ]);
+        if (lookup.rowCount === 0)
+          return errorToToolResult(new AppError('not_found', `app ${app_name} not found`));
+        resolved = lookup.rows[0].id;
+      }
+      const where = resolved !== null ? `WHERE t.app_id = $1` : '';
+      const args = resolved !== null ? [resolved] : [];
+      const { rows } = await db.query(
+        `SELECT t.*, COALESCE(rc.role_count, 0)::int AS role_count
+           FROM teams t
+           LEFT JOIN (
+             SELECT team_id, COUNT(*) AS role_count FROM team_roles GROUP BY team_id
+           ) rc ON rc.team_id = t.id
+           ${where}
+           ORDER BY t.app_id NULLS FIRST, t.name ASC`,
+        args,
+      );
+      return ok(rows);
+    },
+  );
+
+  server.registerTool(
+    'update_team',
+    {
+      description:
+        'Patch any subset of team scalar fields (name, app_id, description, lead_prompt_md). Roles are managed via add_team_role / update_team_role / remove_team_role.',
+      inputSchema: {
+        id: z.number().int().positive(),
+        name: z.string().min(1).optional(),
+        app_id: z.number().int().positive().nullable().optional(),
+        description: z.string().nullable().optional(),
+        lead_prompt_md: z.string().min(1).optional(),
+      },
+    },
+    async ({ id, ...patch }) => {
+      const fields = (Object.keys(patch) as Array<keyof typeof patch>).filter(
+        (k) => patch[k] !== undefined,
+      );
+      if (fields.length === 0)
+        return errorToToolResult(new AppError('invalid_input', 'no fields to update'));
+      const sets: string[] = [];
+      const values: unknown[] = [];
+      let i = 1;
+      for (const f of fields) {
+        sets.push(`${f} = $${i++}`);
+        values.push(patch[f]);
+      }
+      sets.push(`updated_at = now()`);
+      values.push(id);
+      try {
+        const { rows } = await db.query(
+          `UPDATE teams SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
+          values,
+        );
+        if (rows.length === 0)
+          return errorToToolResult(new AppError('not_found', `team ${id} not found`));
+        return ok(rows[0]);
+      } catch (err) {
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      }
+    },
+  );
+
+  server.registerTool(
+    'delete_team',
+    {
+      description:
+        'Hard delete a team. Cascades to team_roles and team_defaults. work_items.team_id on referencing items is set to NULL (those items revert to solo execution).',
+      inputSchema: { id: z.number().int().positive() },
+    },
+    async ({ id }) => {
+      const { rows } = await db.query(`DELETE FROM teams WHERE id = $1 RETURNING id`, [id]);
+      if (rows.length === 0)
+        return errorToToolResult(new AppError('not_found', `team ${id} not found`));
+      return ok({ id });
+    },
+  );
 }

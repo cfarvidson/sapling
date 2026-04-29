@@ -155,3 +155,97 @@ describe('teams tools — create / get', () => {
     expect(body.error.code).toBe('not_found');
   });
 });
+
+describe('teams tools — list / update / delete', () => {
+  let db: TestDb;
+  let client: TestClient;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+  });
+
+  async function makeTeam(name: string, app_id?: number) {
+    return (await client.call('create_team', {
+      name,
+      app_id,
+      lead_prompt_md: 'lead',
+      roles: [{ name: 'r', description_md: 'd' }],
+    })) as { id: number };
+  }
+
+  it('list_teams returns all teams with role_count, optionally filtered by app', async () => {
+    await makeTeam('global');
+    const app = (await client.call('register_app', { name: 'iris' })) as { id: number };
+    await makeTeam('iris-team', app.id);
+    const all = (await client.call('list_teams', {})) as Array<{
+      name: string;
+      role_count: number;
+    }>;
+    expect(all.map((t) => t.name).sort()).toEqual(['global', 'iris-team']);
+    expect(all.every((t) => t.role_count === 1)).toBe(true);
+
+    const onlyIris = (await client.call('list_teams', { app_name: 'iris' })) as Array<{
+      name: string;
+    }>;
+    expect(onlyIris.map((t) => t.name)).toEqual(['iris-team']);
+  });
+
+  it('update_team patches scalars and leaves roles untouched', async () => {
+    const created = await makeTeam('original');
+    const updated = (await client.call('update_team', {
+      id: created.id,
+      name: 'renamed',
+      description: 'new desc',
+      lead_prompt_md: 'new lead',
+    })) as { name: string; description: string; lead_prompt_md: string };
+    expect(updated).toMatchObject({
+      name: 'renamed',
+      description: 'new desc',
+      lead_prompt_md: 'new lead',
+    });
+  });
+
+  it('update_team rejects empty patch', async () => {
+    const created = await makeTeam('x');
+    const raw = await client.callRaw('update_team', { id: created.id });
+    expect(raw.isError).toBe(true);
+    expect(JSON.parse(raw.content[0].text).error.code).toBe('invalid_input');
+  });
+
+  it('delete_team removes the team and cascades to roles', async () => {
+    const created = await makeTeam('to-delete');
+    await client.call('delete_team', { id: created.id });
+    const teams = await db.pool.query(`SELECT id FROM teams WHERE id = $1`, [created.id]);
+    expect(teams.rowCount).toBe(0);
+    const roles = await db.pool.query(`SELECT id FROM team_roles WHERE team_id = $1`, [created.id]);
+    expect(roles.rowCount).toBe(0);
+  });
+
+  it('delete_team sets work_items.team_id to NULL on referencing items', async () => {
+    const created = await makeTeam('soon-deleted');
+    const work = await db.pool.query<{ id: number }>(
+      `INSERT INTO work_items(type, title, description_markdown, team_id)
+       VALUES ('code', 't', 'd', $1) RETURNING id`,
+      [created.id],
+    );
+    await client.call('delete_team', { id: created.id });
+    const after = await db.pool.query<{ team_id: number | null }>(
+      `SELECT team_id FROM work_items WHERE id = $1`,
+      [work.rows[0].id],
+    );
+    expect(after.rows[0].team_id).toBeNull();
+  });
+});
