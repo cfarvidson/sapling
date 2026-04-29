@@ -4,7 +4,15 @@ import type { Db } from '../db.js';
 import { AppError, errorToToolResult, mapPgError } from '../errors.js';
 
 const WorkType = z.enum(['plan', 'code', 'review']);
-const WorkStatus = z.enum(['pending', 'claimed', 'completed', 'failed', 'cancelled', 'blocked']);
+const WorkStatus = z.enum([
+  'pending',
+  'claimed',
+  'completed',
+  'failed',
+  'cancelled',
+  'blocked',
+  'awaiting_input',
+]);
 
 function ok(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
@@ -337,7 +345,7 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
                 claim_expires_at = NULL,
                 failure_reason = NULL,
                 updated_at = now()
-          WHERE id = $1 AND status IN ('failed','blocked','claimed')
+          WHERE id = $1 AND status IN ('failed','blocked','claimed','awaiting_input')
           RETURNING *`,
         [id, after_ms ?? null],
       );

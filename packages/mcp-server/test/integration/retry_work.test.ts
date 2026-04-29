@@ -123,6 +123,19 @@ describe('retry_work', () => {
     expect(updated.failure_reason).toBeNull();
   });
 
+  it('flips an awaiting_input work item back to pending (operator override)', async () => {
+    const item = await enqueue();
+    await client.call('request_human_input', {
+      work_id: item.id,
+      questions_markdown: '1. Q?',
+    });
+    expect((await fetchRow(item.id)).status).toBe('awaiting_input');
+
+    const updated = (await client.call('retry_work', { id: item.id })) as WorkRow;
+    expect(updated.status).toBe('pending');
+    expect(updated.failure_reason).toBeNull();
+  });
+
   it('flips a claimed (operator-overridden) work item back to pending', async () => {
     const item = await enqueue();
     await client.call('claim_next_work', { claimed_by: 'stuck-agent' });
