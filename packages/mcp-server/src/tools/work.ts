@@ -76,14 +76,14 @@ export function registerWork(server: McpServer, db: Db): void {
               `SELECT team_id FROM team_defaults WHERE app_id = $1 AND work_type = $2`,
               [appId, input.type],
             );
-            if (perApp.rowCount > 0) teamId = perApp.rows[0].team_id;
+            if ((perApp.rowCount ?? 0) > 0) teamId = perApp.rows[0].team_id;
           }
           if (teamId === null) {
             const global = await db.query<{ team_id: number }>(
               `SELECT team_id FROM team_defaults WHERE app_id IS NULL AND work_type = $1`,
               [input.type],
             );
-            if (global.rowCount > 0) teamId = global.rows[0].team_id;
+            if ((global.rowCount ?? 0) > 0) teamId = global.rows[0].team_id;
           }
         }
 
