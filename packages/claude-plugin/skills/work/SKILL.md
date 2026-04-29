@@ -52,6 +52,24 @@ Step 3 below MUST consume the values produced by these checks; it must NOT re-de
    - Persist the chosen branch back on the work item (via the artifact you produce or by passing `branch` when enqueueing follow-on items) so reviewers can find it.
    - `cd` into the validated worktree path for the rest of the steps. All edits, commits, and `gh` calls happen there.
 4. **Load binding rules.** If `service_id` is set, call `mcp__sapling__get_service` and `mcp__sapling__get_app({ id: service.app_id })`. Treat both `app.conventions` and `service.conventions` as non-negotiable rules for everything that follows — planning decisions, code style, where review notes get published, etc. If a rule conflicts with the task as written, halt and ask the user; do not silently violate. The user can manage these via `/sapling:rules`.
+
+4b. **Load team (if assigned).** If the claimed work item has `team_id`, call `mcp__sapling__get_team({ id: team_id })`. The result is your team definition. Treat the rest of this work item as **lead mode**:
+
+- Prepend `team.lead_prompt_md` to your operating instructions for this item. Treat it like a service convention — binding, not a suggestion.
+- You have the following specialists available, in dispatch-list order:
+  ```
+  for role in team.roles:
+    name=<role.name>
+    description=<role.description_md>
+    subagent_type=<role.subagent_type or "general-purpose">
+  ```
+- Dispatch a specialist via the `Agent` tool when the work demands it. Use `role.description_md` as the high-signal context for the specialist's prompt (combine it with the specific question/task). Use `role.subagent_type` if present; otherwise `general-purpose`.
+- You remain the only writer to the filesystem and the only caller of `mcp__sapling__attach_artifact`, `mcp__sapling__complete_work`, and `mcp__sapling__request_human_input`. Specialists return text to you; you decide what to commit, what to attach as an artifact, and how to summarize.
+- In your `complete_work` `summary_markdown`, mention which specialists you dispatched and what each contributed (one bullet per specialist is enough). This is the canonical record of team activity.
+- If a specialist surfaces a question you cannot resolve, escalate via `mcp__sapling__request_human_input` exactly as solo mode would (the `$SAPLING_RUNNER` rule applies the same way — see the `type = 'plan'` section).
+
+If `team_id` is null, skip this step entirely and continue in **solo mode** (everything below behaves as it always has).
+
 5. **Resume context: integrate prior questions and answers.** Call `mcp__sapling__list_artifacts({ work_item_id: <id> })`. If both a `pending_questions` and a newer `answers` artifact exist (compare `created_at`), fetch both bodies via `mcp__sapling__get_artifact` and treat the answers as authoritative resolutions of the questions before continuing. Skip if either is missing — the item is being worked on for the first time.
 6. Branch on `type`:
 
