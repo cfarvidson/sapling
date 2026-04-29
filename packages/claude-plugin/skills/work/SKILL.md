@@ -34,12 +34,23 @@ This rule is non-negotiable and applies to every type below.
 
    If the response is `null`, tell the user: "No pending work in the Sapling queue<scope>. Add one with /sapling:plan or /sapling:enqueue." where `<scope>` is e.g. ` for app iris` when an app filter was applied.
 
+### Workspace safety (non-negotiable)
+
+These invariants MUST hold for every worktree the skill creates or operates in. If any check fails, the skill MUST halt with a clear error message naming the offending value — do not silently rewrite, fall back, or relocate. They gate every subsequent step in this skill.
+
+1. **Branch name allowlist.** The branch used for the worktree MUST match the regex `^[A-Za-z0-9._/-]+$`. If the work item's `branch` field contains anything else (spaces, shell metacharacters, leading `-`, control chars, …), halt with `branch '<value>' contains characters outside [A-Za-z0-9._/-]`. Do not strip or substitute. If `branch` is absent, derive one (`sapling/work-<id>` or the Linear `gitBranchName`) and apply the same regex check before use.
+2. **Worktree path constraint.** Compute `repo_root = git rev-parse --show-toplevel` in the host repo. The worktree path MUST be `<repo_root>/.worktrees/<sanitized-tail>`, where `<sanitized-tail>` is the final `/`-segment of the validated branch name (already passes the regex above, so no extra sanitization is needed beyond taking the basename). After creation — or before, if the directory pre-exists — resolve the path with `realpath` (or equivalent) and verify it lies under `<repo_root>/.worktrees/`. If `realpath` of the candidate escapes that prefix (symlink, `..`, absolute override), halt.
+3. **`cwd` assertion before every subprocess.** Before running any subprocess against the worktree (`git`, `gh`, `npm`/`pnpm`, build/test/lint, `cd`-into shell commands, …), assert that the current working directory equals the validated worktree path. If a tool call would run from elsewhere, prefix it with the explicit `cd <validated-path> && …` form rather than relying on inherited `cwd`. This catches the failure mode where an earlier `cd` was reverted by a fresh shell.
+
+Step 3 below MUST consume the values produced by these checks; it must NOT re-derive the branch name or worktree path from scratch.
+
 3. **Always work in an isolated git worktree, branched from latest `origin/main`.** Never run code/review/plan exploration against the user's primary checkout — that risks dirtying state and crossing into in-progress work. Use the `superpowers:using-git-worktrees` skill to create the worktree before touching the filesystem.
    - Resolve the repo from `service_id` (`mcp__sapling__get_service` → `repo_url`). If no `service_id` or `repo_url`, ask the user where to work before proceeding.
    - **Fetch first.** Before creating the worktree, `git fetch origin main` (or the repo's default branch — confirm with `git symbolic-ref refs/remotes/origin/HEAD` if you're unsure) so the new branch is rooted on today's tip of main, not whatever stale ref is in the local checkout. For `review`-type items, fetch the PR's target branch too. Skip the fetch only if the user explicitly asks you to base the worktree on a different ref.
-   - Branch name: use the work item's `branch` field if set; otherwise derive one (e.g. `sapling/work-<id>` or, when a Linear ticket is referenced, the ticket's `gitBranchName`). Create the new branch from `origin/main` (e.g. `git worktree add -b <branch> <path> origin/main`) — never from local `main`, which may be behind.
+   - **Branch name and worktree path:** use the validated values produced by the "Workspace safety" section above — do not re-derive them here. Create the new branch from `origin/main`: `git worktree add -b <validated-branch> <validated-path> origin/main`. Never branch from local `main`, which may be behind.
+   - **`cwd` assertion:** before the first subprocess runs against the new worktree, confirm `cwd` matches `<validated-path>` (per the safety section). If it doesn't, prefix the command with `cd <validated-path> && …` rather than trusting the inherited shell.
    - Persist the chosen branch back on the work item (via the artifact you produce or by passing `branch` when enqueueing follow-on items) so reviewers can find it.
-   - `cd` into the worktree for the rest of the steps. All edits, commits, and `gh` calls happen there.
+   - `cd` into the validated worktree path for the rest of the steps. All edits, commits, and `gh` calls happen there.
 4. **Load binding rules.** If `service_id` is set, call `mcp__sapling__get_service` and `mcp__sapling__get_app({ id: service.app_id })`. Treat both `app.conventions` and `service.conventions` as non-negotiable rules for everything that follows — planning decisions, code style, where review notes get published, etc. If a rule conflicts with the task as written, halt and ask the user; do not silently violate. The user can manage these via `/sapling:rules`.
 5. Branch on `type`:
 
