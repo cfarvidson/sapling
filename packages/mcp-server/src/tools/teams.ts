@@ -39,32 +39,42 @@ export function registerTeams(server: McpServer, db: Db): void {
       },
     },
     async (input) => {
-      const client = await db.connect();
-      let teamId: number;
       try {
-        await client.query('BEGIN');
-        const team = await client.query(
-          `INSERT INTO teams(name, app_id, description, lead_prompt_md)
-           VALUES ($1, $2, $3, $4) RETURNING id`,
-          [input.name, input.app_id ?? null, input.description ?? null, input.lead_prompt_md],
-        );
-        teamId = (team.rows[0] as { id: number }).id;
-        for (const role of input.roles) {
-          await client.query(
-            `INSERT INTO team_roles(team_id, name, description_md, subagent_type, ordinal)
-             VALUES ($1, $2, $3, $4, $5)`,
-            [teamId, role.name, role.description_md, role.subagent_type ?? null, role.ordinal ?? 0],
+        const client = await db.connect();
+        let teamId: number;
+        try {
+          await client.query('BEGIN');
+          const team = await client.query(
+            `INSERT INTO teams(name, app_id, description, lead_prompt_md)
+             VALUES ($1, $2, $3, $4) RETURNING id`,
+            [input.name, input.app_id ?? null, input.description ?? null, input.lead_prompt_md],
           );
+          teamId = (team.rows[0] as { id: number }).id;
+          for (const role of input.roles) {
+            await client.query(
+              `INSERT INTO team_roles(team_id, name, description_md, subagent_type, ordinal)
+               VALUES ($1, $2, $3, $4, $5)`,
+              [
+                teamId,
+                role.name,
+                role.description_md,
+                role.subagent_type ?? null,
+                role.ordinal ?? 0,
+              ],
+            );
+          }
+          await client.query('COMMIT');
+        } catch (err) {
+          await client.query('ROLLBACK');
+          throw err;
+        } finally {
+          client.release();
         }
-        await client.query('COMMIT');
+        const full = await loadTeamWithRoles(db, teamId);
+        return ok(full);
       } catch (err) {
-        await client.query('ROLLBACK');
-        client.release();
         return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
       }
-      client.release();
-      const full = await loadTeamWithRoles(db, teamId);
-      return ok(full);
     },
   );
 
