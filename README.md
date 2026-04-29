@@ -56,6 +56,24 @@ make test    # run the test suite (vitest + testcontainers)
 make nuke    # stop AND drop data volume + ./data/postgres (5s confirmation)
 ```
 
+## Updating images & migrating
+
+Migrations run automatically when `mcp-server` starts (`runMigrations` in `packages/mcp-server/src/index.ts`), so updating + migrating is one motion:
+
+```bash
+docker compose pull postgres        # refresh the postgres:16-alpine tag
+docker compose build mcp-server     # rebuild the local mcp-server image (or: make build)
+docker compose up -d                # recreate containers; migrations apply on startup
+make logs                           # confirm "running migrations"
+```
+
+Notes:
+
+- The `postgres` service is pinned to `postgres:16-alpine`. `pull` only refreshes that tag — it will not bump you to a new major version. For a major upgrade, dump first (`pg_dumpall`), bump the tag, then restore; the bind mount at `./data/postgres` is version-specific.
+- `mcp-server` is built locally, so `pull` is a no-op for it — use `build` instead. Add `--no-cache` if dependencies aren't refreshing.
+- Migrations are forward-only and idempotent: each `.sql` file in `packages/mcp-server/src/schema/` runs once, tracked in the `_migrations` table. To re-run on an already-built image, `docker compose restart mcp-server` is enough.
+- Verify with `make psql` then `SELECT * FROM _migrations ORDER BY applied_at DESC;`.
+
 ## Optional auth
 
 Set `MCP_TOKEN=...` in `.env` to require a bearer token on `/mcp`. Then update your client config:
