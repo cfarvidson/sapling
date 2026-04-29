@@ -265,6 +265,56 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
   );
 
   server.registerTool(
+    'reap_stuck_claims',
+    {
+      description:
+        'Sweep claimed work items whose claim_expires_at has passed: transition to pending (or failed when attempt_count has reached max_claim_attempts), clear claim fields, and return the affected rows.',
+      inputSchema: {
+        now: z.string().datetime().optional(),
+      },
+    },
+    async ({ now }) => {
+      const { rows } = await db.query(
+        `WITH cfg AS (
+           SELECT max_claim_attempts FROM runner_config WHERE id = 1
+         ),
+         expired AS (
+           SELECT w.id, w.attempt_count, w.claimed_by
+             FROM work_items w
+            WHERE w.status = 'claimed'
+              AND w.claim_expires_at < coalesce($1::timestamptz, now())
+            FOR UPDATE OF w SKIP LOCKED
+         )
+         UPDATE work_items w
+            SET status = CASE
+                  WHEN e.attempt_count >= (SELECT max_claim_attempts FROM cfg)
+                    THEN 'failed'::work_status
+                  ELSE 'pending'::work_status
+                END,
+                claimed_at = NULL,
+                claimed_by = NULL,
+                claim_expires_at = NULL,
+                failure_reason = CASE
+                  WHEN e.attempt_count >= (SELECT max_claim_attempts FROM cfg)
+                    THEN format(
+                      'reaped after %s attempts; last claimed_by=%s',
+                      e.attempt_count,
+                      coalesce(e.claimed_by, 'unknown')
+                    )
+                  ELSE NULL
+                END,
+                updated_at = now()
+           FROM expired e
+          WHERE w.id = e.id
+         RETURNING w.id, w.status, w.attempt_count, e.claimed_by AS prior_claimed_by`,
+        [now ?? null],
+      );
+      rows.sort((a: { id: number }, b: { id: number }) => a.id - b.id);
+      return ok(rows);
+    },
+  );
+
+  server.registerTool(
     'unblock_work',
     {
       description: 'Flip a blocked work item back to pending so it can be claimed again.',
