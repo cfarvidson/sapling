@@ -106,10 +106,51 @@ The goal is to finish this branch with an **`active` plan** — i.e. one a code 
   - `REQUEST_CHANGES` — at least one blocker the author must address.
   - `COMMENT` — observations only, no merge-readiness judgement. Use this whenever you are the author (per the rule below) or when the PR is explicitly draft/WIP.
     Put `**Verdict: <STATE>**` on the first line of both the GitHub review body and the `review_notes` artifact, so the verdict is visible without expanding anything.
+- **Body structure (collapsible by default).** The reader cares about the verdict and what blocks merge. Everything else lives behind `<details>` so the comment stays scannable. Use this layout for the GitHub body and the `review_notes` artifact (identical content, except internal-only notes — see below):
+
+  ```markdown
+  **Verdict: <APPROVE|REQUEST_CHANGES|COMMENT>** — one-line reason.
+
+  ## Must fix before merge
+
+  - [ ] <issue> — `path/to/file.ts:42`
+  - [ ] <issue> — `path/to/other.ts:88`
+
+  <!-- Omit the "Must fix" section entirely if there are no blockers. Don't write "None." -->
+
+  <details>
+  <summary>Nits & suggestions (N)</summary>
+
+  - <nit> — `path:line`
+  - …
+  </details>
+
+  <details>
+  <summary>Files reviewed & scope</summary>
+
+  - `path/...` — what you looked at
+  - …
+  </details>
+
+  <details>
+  <summary>Reviewer notes</summary>
+
+  Rationale, alternatives considered, anything that informs the verdict but doesn't belong above the fold.
+
+  </details>
+  ```
+
+  Rules:
+  - **Verdict line and "Must fix" stay outside any `<details>`** so they render without a click.
+  - Drop a `<details>` section entirely when it would be empty — don't ship empty disclosures.
+  - Don't nest `<details>` deeper than one level.
+  - Task-list checkboxes (`- [ ]`) inside `<details>` still work and count toward GitHub's task tracker — use them for nits the author may want to tick off.
+  - Inline line comments (via `gh pr review ... --comment -F` with `--line`/`--path` if you choose to use them) are independent of this body and don't need `<details>`.
+
 - **Post to GitHub with one style:**
   - **Self-authored:** always `gh pr review <pr_url> --comment --body-file <notes>`. Never `--approve` or `--request-changes` your own PR — those carry social weight that doesn't apply to a self-review. The verdict line still goes in the body so the next reader sees your assessment.
   - **Otherwise:** map the verdict to the matching flag — `--approve`, `--request-changes`, or `--comment`. Inline line comments are fine in either mode; the constraint is only on the top-level review state.
-- Call `mcp__sapling__attach_artifact(kind='review_notes', body_markdown=..., work_item_id=...)` with the same body posted to GitHub. Internal-only notes go below a `## Internal notes` heading at the bottom.
+- Call `mcp__sapling__attach_artifact(kind='review_notes', body_markdown=..., work_item_id=...)` with the same body posted to GitHub. Internal-only notes (things you don't want on the PR) go below a `## Internal notes` heading at the very bottom of the artifact and MUST be stripped before posting to GitHub.
 - Call `mcp__sapling__complete_work` with the artifact id and a summary that names the verdict.
 
 ## After completion
