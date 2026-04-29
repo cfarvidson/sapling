@@ -315,6 +315,44 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
   );
 
   server.registerTool(
+    'retry_work',
+    {
+      description:
+        'Re-queue a failed/blocked/claimed work item as pending. Optionally schedule the next claim by passing after_ms (delay in milliseconds; null/0 = retry immediately). Does not mutate attempt_count — explicit retries are clean retries.',
+      inputSchema: {
+        id: z.number().int().positive(),
+        after_ms: z.number().int().nonnegative().optional(),
+      },
+    },
+    async ({ id, after_ms }) => {
+      const { rows } = await db.query(
+        `UPDATE work_items
+            SET status = 'pending',
+                next_retry_at = CASE
+                  WHEN $2::int IS NULL OR $2::int <= 0 THEN NULL
+                  ELSE now() + ($2::int * interval '1 millisecond')
+                END,
+                claimed_at = NULL,
+                claimed_by = NULL,
+                claim_expires_at = NULL,
+                failure_reason = NULL,
+                updated_at = now()
+          WHERE id = $1 AND status IN ('failed','blocked','claimed')
+          RETURNING *`,
+        [id, after_ms ?? null],
+      );
+      if (rows.length === 0)
+        return errorToToolResult(
+          new AppError(
+            'conflict',
+            `work ${id} not found or in a terminal state (completed/cancelled)`,
+          ),
+        );
+      return ok(rows[0]);
+    },
+  );
+
+  server.registerTool(
     'unblock_work',
     {
       description: 'Flip a blocked work item back to pending so it can be claimed again.',
