@@ -22,7 +22,8 @@ export function registerWork(server: McpServer, db: Db): void {
   server.registerTool(
     'enqueue_work',
     {
-      description: 'Add a typed task to the queue (plan / code / review).',
+      description:
+        'Add a typed task to the queue (plan / code / review). team_id resolution: explicit value > per-app default for (service.app_id, type) > global default for (NULL, type) > null (solo agent).',
       inputSchema: {
         type: WorkType,
         title: z.string().min(1),
@@ -32,14 +33,64 @@ export function registerWork(server: McpServer, db: Db): void {
         plan_id: z.number().int().positive().optional(),
         branch: z.string().optional(),
         pr_url: z.string().url().optional(),
+        team_id: z.number().int().positive().optional(),
       },
     },
     async (input) => {
       try {
+        let appId: number | null = null;
+        if (input.service_id) {
+          const svc = await db.query<{ app_id: number | null }>(
+            `SELECT app_id FROM services WHERE id = $1`,
+            [input.service_id],
+          );
+          if (svc.rowCount === 0)
+            return errorToToolResult(
+              new AppError('not_found', `service ${input.service_id} not found`),
+            );
+          appId = svc.rows[0].app_id;
+        }
+
+        let teamId: number | null = null;
+        if (input.team_id !== undefined) {
+          const t = await db.query<{ app_id: number | null }>(
+            `SELECT app_id FROM teams WHERE id = $1`,
+            [input.team_id],
+          );
+          if (t.rowCount === 0)
+            return errorToToolResult(new AppError('not_found', `team ${input.team_id} not found`));
+          const teamApp = t.rows[0].app_id;
+          if (teamApp !== null && appId !== null && teamApp !== appId) {
+            return errorToToolResult(
+              new AppError(
+                'invalid_input',
+                `team ${input.team_id} is scoped to app ${teamApp} but service belongs to app ${appId}`,
+              ),
+            );
+          }
+          teamId = input.team_id;
+        } else {
+          // Resolution chain: per-app default → global default → null.
+          if (appId !== null) {
+            const perApp = await db.query<{ team_id: number }>(
+              `SELECT team_id FROM team_defaults WHERE app_id = $1 AND work_type = $2`,
+              [appId, input.type],
+            );
+            if (perApp.rowCount > 0) teamId = perApp.rows[0].team_id;
+          }
+          if (teamId === null) {
+            const global = await db.query<{ team_id: number }>(
+              `SELECT team_id FROM team_defaults WHERE app_id IS NULL AND work_type = $1`,
+              [input.type],
+            );
+            if (global.rowCount > 0) teamId = global.rows[0].team_id;
+          }
+        }
+
         const { rows } = await db.query(
           `INSERT INTO work_items
-             (type, title, description_markdown, priority, service_id, plan_id, branch, pr_url)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+             (type, title, description_markdown, priority, service_id, plan_id, branch, pr_url, team_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
           [
             input.type,
             input.title,
@@ -49,6 +100,7 @@ export function registerWork(server: McpServer, db: Db): void {
             input.plan_id ?? null,
             input.branch ?? null,
             input.pr_url ?? null,
+            teamId,
           ],
         );
         return ok(rows[0]);
@@ -76,7 +128,7 @@ export function registerWork(server: McpServer, db: Db): void {
     'list_work',
     {
       description:
-        'List work items with optional filters. Each row includes app_id and app_name (resolved through services) so callers can group/sort by app without a separate join.',
+        'List work items with optional filters. Each row includes app_id, app_name, and team_name (NULL if no team assigned).',
       inputSchema: {
         status: WorkStatus.optional(),
         type: WorkType.optional(),
@@ -118,10 +170,11 @@ export function registerWork(server: McpServer, db: Db): void {
       }
       const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
       const { rows } = await db.query(
-        `SELECT w.*, s.app_id AS app_id, a.name AS app_name
+        `SELECT w.*, s.app_id AS app_id, a.name AS app_name, tm.name AS team_name
            FROM work_items w
            LEFT JOIN services s ON s.id = w.service_id
            LEFT JOIN apps a ON a.id = s.app_id
+           LEFT JOIN teams tm ON tm.id = w.team_id
            ${where}
            ORDER BY a.name NULLS LAST, w.priority DESC, w.created_at ASC`,
         vals,

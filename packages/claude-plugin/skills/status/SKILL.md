@@ -33,23 +33,23 @@ Summarize the current state of the Sapling queue, grouped by app so the user can
    ```
    ## <app-name>           PENDING <p>  CLAIMED <c>  AWAITING <a>  BLOCKED <b>  FAILED <f>
    pending:
-     #<id>  <type>  <title>          (service=<service_id> plan=<plan_id>)
+     #<id>  <type>  <title>          (service=<service_id> plan=<plan_id> team=<team_name?>)
      …                                 (next 5, ordered by priority desc / created asc)
    claimed:
-     #<id>  <type>  <title>          claimed_by=<claimed_by> @ <claimed_at>
+     #<id>  <type>  <title>          (service=<service_id> plan=<plan_id> team=<team_name?>) claimed_by=<claimed_by> @ <claimed_at>
      …                                 (every claimed row — stale claims are the #1 cause of
                                        "nothing to do", surface them all)
    awaiting_input:
-     #<id>  <type>  <title>          (run /sapling:human <id> to answer)
+     #<id>  <type>  <title>          (service=<service_id> plan=<plan_id> team=<team_name?>) (run /sapling:human <id> to answer)
    blocked:
-     #<id>  <type>  <title>
+     #<id>  <type>  <title>          (service=<service_id> plan=<plan_id> team=<team_name?>)
        reason: <failure_reason>
    failed:
-     #<id>  <type>  <title>
+     #<id>  <type>  <title>          (service=<service_id> plan=<plan_id> team=<team_name?>)
        reason: <failure_reason>
    ```
 
-   Skip empty subsections within an app to keep the output dense. If `awaiting_input` totals are non-zero anywhere, append `Run /sapling:human to answer.` to the footer.
+   Skip empty subsections within an app to keep the output dense. If `awaiting_input` totals are non-zero anywhere, append `Run /sapling:human to answer.` to the footer. Each row also carries `team_name` (NULL if no team is attached). When non-null, render it next to `service`/`plan` in parentheses; suppress the key entirely when null to keep output dense.
 
 4. After the per-app sections, print a one-line cross-app totals row:
 

@@ -39,7 +39,7 @@ Surface and edit Sapling state. `list_work` / `list_plans` show metadata only �
 
 ```
 PENDING WORK
-  #4  review     IRIS-1636: …                  service=32 plan=1
+  #4  review     IRIS-1636: …                  service=32 plan=1 team=code-review
   …
 CLAIMED WORK         (in flight)
 BLOCKED WORK         (with reason on its own line — waiting on external dependency)
@@ -48,12 +48,15 @@ DRAFT PLANS          ← these need user sign-off; nothing will execute against 
 ACTIVE PLANS
 ```
 
+When a row's `team_name` is null (solo agent), suppress the `team=` key — show it only when set.
+
 3. Footer: `Run /sapling:queue plan <id> activate` or `/sapling:queue work <id> unblock` so the next action is one keystroke away.
 
 ### `work <id>` / `plan <id>`
 
 - `mcp__sapling__get_work({ id })` or `mcp__sapling__get_plan({ id })`.
 - Print all fields. For plans, print `body_markdown` verbatim (in a fenced block).
+- If `team_id` is set, also call `mcp__sapling__get_team({ id: team_id })` and print the team name, lead prompt header (first line), and role list. This makes it obvious what will run when the runner spawns this item.
 - For work with a `plan_id`, also fetch that plan's status and warn if `draft` / `archived` / `completed` — those should not be executed against.
 
 ### Plan actions

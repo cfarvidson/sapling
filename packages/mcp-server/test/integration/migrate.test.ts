@@ -25,6 +25,9 @@ describe('migrate', () => {
       'plans',
       'runner_config',
       'services',
+      'team_defaults',
+      'team_roles',
+      'teams',
       'work_items',
     ]);
   });
