@@ -250,30 +250,46 @@ export function registerWorkClaim(server: McpServer, db: Db): void {
   server.registerTool(
     'claim_next_work',
     {
-      description: 'Atomically claim the next pending work item. Returns null if none.',
+      description:
+        'Atomically claim the next pending work item. Returns null if none. Use app_id or app_name to scope the claim to one app (joins through services).',
       inputSchema: {
         claimed_by: z.string().min(1),
         types: WorkTypeArr.optional(),
         service_id: z.number().int().positive().optional(),
+        app_id: z.number().int().positive().optional(),
+        app_name: z.string().min(1).optional(),
       },
     },
-    async ({ claimed_by, types, service_id }) => {
+    async ({ claimed_by, types, service_id, app_id, app_name }) => {
+      let resolvedAppId: number | null = app_id ?? null;
+      if (resolvedAppId === null && app_name) {
+        const lookup = await db.query<{ id: number }>(`SELECT id FROM apps WHERE name = $1`, [
+          app_name,
+        ]);
+        if (lookup.rowCount === 0) {
+          return errorToToolResult(new AppError('not_found', `app ${app_name} not found`));
+        }
+        resolvedAppId = lookup.rows[0].id;
+      }
+
       const { rows } = await db.query(
         `WITH next AS (
-           SELECT id FROM work_items
-            WHERE status = 'pending'
-              AND ($1::work_type[] IS NULL OR type = ANY($1))
-              AND ($2::int IS NULL OR service_id = $2)
-            ORDER BY priority DESC, created_at ASC
-            FOR UPDATE SKIP LOCKED
+           SELECT w.id FROM work_items w
+            LEFT JOIN services s ON s.id = w.service_id
+            WHERE w.status = 'pending'
+              AND ($1::work_type[] IS NULL OR w.type = ANY($1))
+              AND ($2::int IS NULL OR w.service_id = $2)
+              AND ($3::int IS NULL OR s.app_id = $3)
+            ORDER BY w.priority DESC, w.created_at ASC
+            FOR UPDATE OF w SKIP LOCKED
             LIMIT 1
          )
          UPDATE work_items w
-            SET status = 'claimed', claimed_at = now(), claimed_by = $3, updated_at = now()
+            SET status = 'claimed', claimed_at = now(), claimed_by = $4, updated_at = now()
            FROM next
           WHERE w.id = next.id
          RETURNING w.*`,
-        [types ?? null, service_id ?? null, claimed_by],
+        [types ?? null, service_id ?? null, resolvedAppId, claimed_by],
       );
       return { content: [{ type: 'text' as const, text: JSON.stringify(rows[0] ?? null) }] };
     },

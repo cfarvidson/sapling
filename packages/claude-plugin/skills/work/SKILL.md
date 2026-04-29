@@ -22,10 +22,18 @@ This rule is non-negotiable and applies to every type below.
 
 ## Steps
 
-1. Call MCP tool `mcp__sapling__claim_next_work` with `claimed_by` set to a stable agent label
-   (e.g. `claude-${HOSTNAME}` from the env). Optional: pass `types` if the user specified
-   a filter in arguments (e.g. `/sapling:work code` -> `types: ['code']`).
-2. If the result is `null`, tell the user: "No pending work in the Sapling queue. Add one with /sapling:plan or /sapling:enqueue." and stop.
+1. Parse the slash arguments. Each bareword is one of:
+   - `plan`, `code`, `review` → add to `types`;
+   - any other token → treat as `app_name` (must already be registered in Sapling; at most one).
+
+   Examples: `/sapling:work` → no filter; `/sapling:work iris` → `app_name: 'iris'`; `/sapling:work code` → `types: ['code']`; `/sapling:work iris code` → both.
+
+2. Call `mcp__sapling__claim_next_work` with `claimed_by` set to a stable agent label (e.g. `claude-${HOSTNAME}` from the env) plus the `types` and `app_name` parsed above. The server scopes the claim by joining `services → apps`, so an app filter only picks items whose `service_id` belongs to that app — items with `service_id = null` are excluded when an app filter is set.
+
+   If the response is a `not_found` error for the app, stop and tell the user: "App `<name>` is not registered. Run `/sapling:learn <name> …` first or call without the app filter."
+
+   If the response is `null`, tell the user: "No pending work in the Sapling queue<scope>. Add one with /sapling:plan or /sapling:enqueue." where `<scope>` is e.g. ` for app iris` when an app filter was applied.
+
 3. **Always work in an isolated git worktree, branched from latest `origin/main`.** Never run code/review/plan exploration against the user's primary checkout — that risks dirtying state and crossing into in-progress work. Use the `superpowers:using-git-worktrees` skill to create the worktree before touching the filesystem.
    - Resolve the repo from `service_id` (`mcp__sapling__get_service` → `repo_url`). If no `service_id` or `repo_url`, ask the user where to work before proceeding.
    - **Fetch first.** Before creating the worktree, `git fetch origin main` (or the repo's default branch — confirm with `git symbolic-ref refs/remotes/origin/HEAD` if you're unsure) so the new branch is rooted on today's tip of main, not whatever stale ref is in the local checkout. For `review`-type items, fetch the PR's target branch too. Skip the fetch only if the user explicitly asks you to base the worktree on a different ref.
