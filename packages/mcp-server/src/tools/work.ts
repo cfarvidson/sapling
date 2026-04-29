@@ -128,7 +128,7 @@ export function registerWork(server: McpServer, db: Db): void {
     'list_work',
     {
       description:
-        'List work items with optional filters. Each row includes app_id and app_name (resolved through services) so callers can group/sort by app without a separate join.',
+        'List work items with optional filters. Each row includes app_id, app_name, and team_name (NULL if no team assigned).',
       inputSchema: {
         status: WorkStatus.optional(),
         type: WorkType.optional(),
@@ -170,10 +170,11 @@ export function registerWork(server: McpServer, db: Db): void {
       }
       const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
       const { rows } = await db.query(
-        `SELECT w.*, s.app_id AS app_id, a.name AS app_name
+        `SELECT w.*, s.app_id AS app_id, a.name AS app_name, tm.name AS team_name
            FROM work_items w
            LEFT JOIN services s ON s.id = w.service_id
            LEFT JOIN apps a ON a.id = s.app_id
+           LEFT JOIN teams tm ON tm.id = w.team_id
            ${where}
            ORDER BY a.name NULLS LAST, w.priority DESC, w.created_at ASC`,
         vals,

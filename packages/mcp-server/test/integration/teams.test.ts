@@ -395,3 +395,51 @@ describe('team_defaults tools', () => {
     expect(JSON.parse(raw.content[0].text).error.code).toBe('not_found');
   });
 });
+
+describe('list_work — team_name surfacing', () => {
+  let db: TestDb;
+  let client: TestClient;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+  });
+
+  it('returns team_name on each row, NULL when no team is assigned', async () => {
+    const team = (await client.call('create_team', {
+      name: 'team-x',
+      lead_prompt_md: 'lead',
+      roles: [{ name: 'r', description_md: 'd' }],
+    })) as { id: number };
+    await client.call('enqueue_work', {
+      type: 'code',
+      title: 'with-team',
+      description_markdown: 'd',
+      team_id: team.id,
+    });
+    await client.call('enqueue_work', {
+      type: 'code',
+      title: 'solo',
+      description_markdown: 'd',
+    });
+    const rows = (await client.call('list_work', {})) as Array<{
+      title: string;
+      team_name: string | null;
+    }>;
+    const byTitle = Object.fromEntries(rows.map((r) => [r.title, r.team_name]));
+    expect(byTitle['with-team']).toBe('team-x');
+    expect(byTitle['solo']).toBeNull();
+  });
+});
