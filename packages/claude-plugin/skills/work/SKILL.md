@@ -52,7 +52,8 @@ Step 3 below MUST consume the values produced by these checks; it must NOT re-de
    - Persist the chosen branch back on the work item (via the artifact you produce or by passing `branch` when enqueueing follow-on items) so reviewers can find it.
    - `cd` into the validated worktree path for the rest of the steps. All edits, commits, and `gh` calls happen there.
 4. **Load binding rules.** If `service_id` is set, call `mcp__sapling__get_service` and `mcp__sapling__get_app({ id: service.app_id })`. Treat both `app.conventions` and `service.conventions` as non-negotiable rules for everything that follows — planning decisions, code style, where review notes get published, etc. If a rule conflicts with the task as written, halt and ask the user; do not silently violate. The user can manage these via `/sapling:rules`.
-5. Branch on `type`:
+5. **Resume context: integrate prior questions and answers.** Call `mcp__sapling__list_artifacts({ work_item_id: <id> })`. If both a `pending_questions` and a newer `answers` artifact exist (compare `created_at`), fetch both bodies via `mcp__sapling__get_artifact` and treat the answers as authoritative resolutions of the questions before continuing. Skip if either is missing — the item is being worked on for the first time.
+6. Branch on `type`:
 
 ### type = 'plan'
 
@@ -63,6 +64,7 @@ The goal is to finish this branch with an **`active` plan** — i.e. one a code 
 - Plans typically don't produce commits, but exploration still happens in the worktree so any scratch edits stay isolated.
 - **Surface every open question before writing the plan.** While drafting, keep a running list of: ambiguous requirements ("does X include Y?"), unspecified data shapes / API contracts, missing acceptance criteria, choice points where two reasonable approaches exist, integrations / dependencies whose behaviour you assumed, rollout / migration / backwards-compat concerns, and test strategy gaps.
 - **Ask in batched rounds.** Send one message containing all current open questions (numbered list), wait for answers, integrate them, then ask again only if new questions surfaced from the answers. Don't drip questions one at a time. Don't paper over uncertainty with vague language — resolve it before persisting.
+- **Autonomous fallback when there is no human in the loop.** If the session is non-interactive (e.g. spawned by `sapling-runner`) or the user is otherwise unavailable, do NOT guess and do NOT persist a half-baked plan. After exhausting in-session resolution, if open questions remain, call `mcp__sapling__request_human_input({ work_id, questions_markdown })` with all unresolved questions as a numbered markdown list and exit cleanly. The work item flips to `awaiting_input`, the runner moves on, and the user discovers it via `/sapling:human`. Once they answer, the item flips back to `pending` and a future `/sapling:work` run picks up step 5 (resume context) and continues with the answers in hand. Do NOT call `complete_work` or `fail_work` in this path.
 - Only when there are no open questions left, persist the plan with `mcp__sapling__create_plan({ ..., status: 'active' })`. If the user explicitly asks to defer ("park this as draft, I'll review later"), pass `status: 'draft'` instead and tell them how to flip it (`/sapling:queue plan <id> activate`).
 - Offer to enqueue follow-on `code` work (`mcp__sapling__enqueue_work({ type: 'code', plan_id, service_id, title, description_markdown, branch })`). Default to "yes, one item per logical step in the plan"; let the user veto.
 - Call `mcp__sapling__complete_work` with `id` and a `summary_markdown` that names the new plan id, its status, and any follow-on work item ids.
@@ -88,11 +90,12 @@ The goal is to finish this branch with an **`active` plan** — i.e. one a code 
 - **Plan roll-up nudge.** If the just-completed work item had a `plan_id`, call `mcp__sapling__list_work({ plan_id })`. If every sibling row is `completed` or `cancelled` and the plan's status is still `active`, ask the user: "All work for plan #N is terminal. Mark the plan `completed`?" — on yes, `mcp__sapling__update_plan({ id: plan_id, status: 'completed' })`. On no, leave it alone. Skip the prompt entirely if any sibling is still `pending`/`claimed`/`failed`.
 - **Worktree cleanup.** Leave the worktree on disk if there's an open PR or follow-on work; otherwise tear it down with `git worktree remove` once the work item is `completed` and nothing else references it.
 
-## Failure vs. blocked
+## Failure vs. blocked vs. awaiting_input
 
-Distinguish "this work item went wrong" from "this work item can't progress yet":
+Distinguish "this work item went wrong" from "this work item can't progress yet" from "this work item needs the user to answer something":
 
-- **Blocked** — the work itself is fine but waiting on something external: PR review, a stakeholder answer, another Sapling work item that hasn't completed, infra/access not yet provisioned. Call `mcp__sapling__block_work({ id, reason })` with a specific reason ("waiting on PR review for cfarvidson/iris-493-…"). `claim_next_work` skips blocked items, so the queue keeps moving. The user (or an upstream completion) flips it back via `/sapling:queue work <id> unblock`.
+- **Awaiting input** — autonomous planning hit unresolved questions and there is no interactive human to ask. Call `mcp__sapling__request_human_input({ work_id, questions_markdown })` with a numbered list of every open question. The tool atomically writes a `pending_questions` artifact and flips status to `awaiting_input`; `claim_next_work` skips these items. The user discovers them via `/sapling:human` and answers in-session, which flips status back to `pending` and writes an `answers` artifact. A future `/sapling:work` run reloads both artifacts (step 5) and continues. Use only when guessing would produce a wrong plan — not as a substitute for in-session questions when the user is present.
+- **Blocked** — the work itself is fine but waiting on something external that is NOT a user question: PR review, another Sapling work item that hasn't completed, infra/access not yet provisioned. Call `mcp__sapling__block_work({ id, reason })` with a specific reason ("waiting on PR review for cfarvidson/iris-493-…"). `claim_next_work` skips blocked items, so the queue keeps moving. The user (or an upstream completion) flips it back via `/sapling:queue work <id> unblock`.
 - **Failed** — actually wrong: tests fail you can't fix, the plan turned out to be infeasible, the worktree is in a broken state you can't recover. Call `mcp__sapling__fail_work({ id, reason })`. Failures are not auto-retried.
 
-In both cases, stop after the call. Do not loop on `claim_next_work` automatically — let the user decide.
+In all three cases, stop after the call. Do not loop on `claim_next_work` automatically — let the user (or the runner, on its next tick) decide.

@@ -29,6 +29,7 @@ That gives you these `/sapling:<name>` slash commands:
 - `/sapling:plan <desc>` — enqueue a planning task
 - `/sapling:enqueue <code|review> <desc>` — enqueue a code or review task
 - `/sapling:status` — queue health
+- `/sapling:human [<id>]` — list or answer work items paused on user questions (`awaiting_input`)
 - `/sapling:queue [<work|plan> <id> [action]]` — inspect the queue and run lifecycle actions (activate, archive, update, replace, cancel, block, unblock, retry)
 - `/sapling:rules [<service> | app <app-name>] [add|replace|remove|clear …]` — manage binding rules for an app or service
 - `/sapling:context <service>` — load service context
@@ -73,7 +74,7 @@ Set `MCP_TOKEN=...` in `.env` to require a bearer token on `/mcp`. Then update y
 
 ## Layout
 
-- `packages/mcp-server/` — Node/TypeScript MCP server (Streamable HTTP transport, 24 tools)
+- `packages/mcp-server/` — Node/TypeScript MCP server (Streamable HTTP transport, 26 tools)
 - `packages/claude-plugin/` — `.mcp.json` template + skills
 - `packages/runner/` — `sapling-runner` daemon: polls the queue, spawns coding-agent subprocesses up to `max_concurrent`, reaps stuck claims each tick
 
@@ -99,6 +100,27 @@ update_runner_config({ poll_interval_ms: 15000 })   # requires runner restart
 `agent_command` and `max_concurrent` take effect on the next tick. `poll_interval_ms` is read once at startup to arm the polling timer and requires a runner restart to apply.
 
 Defaults: `max_concurrent=1`, `poll_interval_ms=30000`, `claim_ttl_ms=7200000` (2h), `max_claim_attempts=5`. Stuck claims older than `claim_ttl_ms` are reaped on the next tick (back to `pending`, or `failed` if `attempt_count` reached `max_claim_attempts`).
+
+### Asking the user mid-plan
+
+When an autonomous planning agent hits an ambiguity that would require guessing — unspecified API shapes, missing acceptance criteria, two reasonable approaches — it pauses the work item instead of producing a half-baked plan. The agent calls `request_human_input(work_id, questions_markdown)`, which atomically writes a `pending_questions` artifact and flips status from `claimed` to `awaiting_input`. The runner skips `awaiting_input` items, so the queue keeps moving.
+
+Discoverability is **pull-based**: there are no outbound transports (no Slack webhook, no iMessage, no push). Run `/sapling:human` whenever you want to see what's waiting:
+
+```text
+/sapling:human            # list every awaiting_input item with its first question
+/sapling:human <id>       # show the full questions and type your answers in-session
+```
+
+Submitting answers calls `provide_human_input`, which writes an `answers` artifact and flips status back to `pending`. The runner re-claims the item on the next tick; the next agent reads both artifacts (latest `pending_questions` + newer `answers`) before continuing planning. `/sapling:status` shows the `awaiting_input` count alongside the others, and `/sapling:queue work <id> retry` clears a paused item if the questions turn out to be wrong.
+
+If you want proactive nudging, pair with `/loop`:
+
+```text
+/loop 30m /sapling:human
+```
+
+Tradeoff: pull-based means you have to check on your own cadence, but it removes every transport-flakiness failure mode (delivery, permissions, auth) that an outbound notifier would introduce. If proactive notification proves necessary, it ships as a separate phase later.
 
 ## Tests
 

@@ -1,6 +1,6 @@
 ---
 name: status
-description: Show Sapling queue health (pending / claimed / blocked / failed) grouped by app. Triggers on /sapling:status.
+description: Show Sapling queue health (pending / claimed / awaiting_input / blocked / failed) grouped by app. Triggers on /sapling:status.
 ---
 
 # /sapling:status
@@ -17,9 +17,10 @@ Summarize the current state of the Sapling queue, grouped by app so the user can
 ## Steps
 
 1. Parse arguments: a single bareword is treated as `app_name`. No arg means "all apps".
-2. Call `mcp__sapling__list_work` four times in parallel, passing `app_name` through if it was supplied:
+2. Call `mcp__sapling__list_work` five times in parallel, passing `app_name` through if it was supplied:
    - `{ status: 'pending', app_name? }`
    - `{ status: 'claimed', app_name? }`
+   - `{ status: 'awaiting_input', app_name? }`
    - `{ status: 'blocked', app_name? }`
    - `{ status: 'failed', app_name? }`
 
@@ -30,7 +31,7 @@ Summarize the current state of the Sapling queue, grouped by app so the user can
 3. Group the rows by `app_name`. Sort apps alphabetically; render `(unassigned)` last. For each app, output:
 
    ```
-   ## <app-name>           PENDING <p>  CLAIMED <c>  BLOCKED <b>  FAILED <f>
+   ## <app-name>           PENDING <p>  CLAIMED <c>  AWAITING <a>  BLOCKED <b>  FAILED <f>
    pending:
      #<id>  <type>  <title>          (service=<service_id> plan=<plan_id>)
      …                                 (next 5, ordered by priority desc / created asc)
@@ -38,6 +39,8 @@ Summarize the current state of the Sapling queue, grouped by app so the user can
      #<id>  <type>  <title>          claimed_by=<claimed_by> @ <claimed_at>
      …                                 (every claimed row — stale claims are the #1 cause of
                                        "nothing to do", surface them all)
+   awaiting_input:
+     #<id>  <type>  <title>          (run /sapling:human <id> to answer)
    blocked:
      #<id>  <type>  <title>
        reason: <failure_reason>
@@ -46,10 +49,10 @@ Summarize the current state of the Sapling queue, grouped by app so the user can
        reason: <failure_reason>
    ```
 
-   Skip empty subsections within an app to keep the output dense.
+   Skip empty subsections within an app to keep the output dense. If `awaiting_input` totals are non-zero anywhere, append `Run /sapling:human to answer.` to the footer.
 
 4. After the per-app sections, print a one-line cross-app totals row:
 
    ```
-   TOTALS  PENDING <P>  CLAIMED <C>  BLOCKED <B>  FAILED <F>
+   TOTALS  PENDING <P>  CLAIMED <C>  AWAITING <A>  BLOCKED <B>  FAILED <F>
    ```
