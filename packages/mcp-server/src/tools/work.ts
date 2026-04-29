@@ -67,25 +67,55 @@ export function registerWork(server: McpServer, db: Db): void {
   server.registerTool(
     'list_work',
     {
-      description: 'List work items with optional filters.',
+      description:
+        'List work items with optional filters. Each row includes app_id and app_name (resolved through services) so callers can group/sort by app without a separate join.',
       inputSchema: {
         status: WorkStatus.optional(),
         type: WorkType.optional(),
         service_id: z.number().int().positive().optional(),
         plan_id: z.number().int().positive().optional(),
+        app_id: z.number().int().positive().optional(),
+        app_name: z.string().min(1).optional(),
       },
     },
     async (filters) => {
+      let resolvedAppId: number | null = filters.app_id ?? null;
+      if (resolvedAppId === null && filters.app_name) {
+        const lookup = await db.query<{ id: number }>(`SELECT id FROM apps WHERE name = $1`, [
+          filters.app_name,
+        ]);
+        if (lookup.rowCount === 0) {
+          return errorToToolResult(new AppError('not_found', `app ${filters.app_name} not found`));
+        }
+        resolvedAppId = lookup.rows[0].id;
+      }
+
       const conds: string[] = [];
       const vals: unknown[] = [];
-      for (const [k, v] of Object.entries(filters)) {
+      const directColumns: Array<keyof typeof filters> = [
+        'status',
+        'type',
+        'service_id',
+        'plan_id',
+      ];
+      for (const k of directColumns) {
+        const v = filters[k];
         if (v === undefined) continue;
         vals.push(v);
-        conds.push(`${k} = $${vals.length}`);
+        conds.push(`w.${k} = $${vals.length}`);
+      }
+      if (resolvedAppId !== null) {
+        vals.push(resolvedAppId);
+        conds.push(`s.app_id = $${vals.length}`);
       }
       const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
       const { rows } = await db.query(
-        `SELECT * FROM work_items ${where} ORDER BY priority DESC, created_at ASC`,
+        `SELECT w.*, s.app_id AS app_id, a.name AS app_name
+           FROM work_items w
+           LEFT JOIN services s ON s.id = w.service_id
+           LEFT JOIN apps a ON a.id = s.app_id
+           ${where}
+           ORDER BY a.name NULLS LAST, w.priority DESC, w.created_at ASC`,
         vals,
       );
       return ok(rows);
