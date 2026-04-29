@@ -106,7 +106,7 @@ describe('teams schema (migration 006)', () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `pnpm --filter @sapling/mcp-server test -- teams.test`
+Run: `pnpm --filter mcp-server test -- teams.test`
 Expected: FAILS — `relation "teams" does not exist` (or similar). The migration hasn't been written.
 
 - [ ] **Step 3: Write the migration**
@@ -153,7 +153,7 @@ Note: `UNIQUE NULLS NOT DISTINCT` requires Postgres 15+. Sapling pins `postgres:
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `pnpm --filter @sapling/mcp-server test -- teams.test`
+Run: `pnpm --filter mcp-server test -- teams.test`
 Expected: All three tests in the schema describe block PASS.
 
 - [ ] **Step 5: Commit**
@@ -284,7 +284,7 @@ describe('teams tools — create / get', () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `pnpm --filter @sapling/mcp-server test -- teams.test`
+Run: `pnpm --filter mcp-server test -- teams.test`
 Expected: FAILS — `tool create_team returned error: ... method not found` (or similar). The tools aren't registered yet.
 
 - [ ] **Step 3: Implement `create_team` and `get_team`**
@@ -427,7 +427,7 @@ export function registerAllTools(server: McpServer, db: Db): void {
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `pnpm --filter @sapling/mcp-server test -- teams.test`
+Run: `pnpm --filter mcp-server test -- teams.test`
 Expected: All five tests in the new describe block PASS.
 
 - [ ] **Step 5: Commit**
@@ -548,7 +548,7 @@ describe('teams tools — list / update / delete', () => {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `pnpm --filter @sapling/mcp-server test -- teams.test`
+Run: `pnpm --filter mcp-server test -- teams.test`
 Expected: All five new tests FAIL — tools not registered.
 
 - [ ] **Step 3: Implement the three tools**
@@ -652,7 +652,7 @@ server.registerTool(
 
 - [ ] **Step 4: Run the tests**
 
-Run: `pnpm --filter @sapling/mcp-server test -- teams.test`
+Run: `pnpm --filter mcp-server test -- teams.test`
 Expected: All ten teams-tool tests PASS (the five from Task 2 plus the five new ones).
 
 - [ ] **Step 5: Commit**
@@ -758,7 +758,7 @@ describe('team_roles tools', () => {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `pnpm --filter @sapling/mcp-server test -- teams.test`
+Run: `pnpm --filter mcp-server test -- teams.test`
 Expected: Four new tests FAIL.
 
 - [ ] **Step 3: Implement the three tools**
@@ -855,7 +855,7 @@ server.registerTool(
 
 - [ ] **Step 4: Run the tests**
 
-Run: `pnpm --filter @sapling/mcp-server test -- teams.test`
+Run: `pnpm --filter mcp-server test -- teams.test`
 Expected: All four new tests PASS.
 
 - [ ] **Step 5: Commit**
@@ -949,7 +949,7 @@ describe('team_defaults tools', () => {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `pnpm --filter @sapling/mcp-server test -- teams.test`
+Run: `pnpm --filter mcp-server test -- teams.test`
 Expected: Four new tests FAIL.
 
 - [ ] **Step 3: Implement the two tools**
@@ -1025,7 +1025,7 @@ server.registerTool(
 
 - [ ] **Step 4: Run the tests**
 
-Run: `pnpm --filter @sapling/mcp-server test -- teams.test`
+Run: `pnpm --filter mcp-server test -- teams.test`
 Expected: All four new tests PASS. The full `teams.test.ts` suite passes (~18 tests total).
 
 - [ ] **Step 5: Commit**
@@ -1178,7 +1178,7 @@ describe('enqueue_work — team_id resolution chain', () => {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `pnpm --filter @sapling/mcp-server test -- enqueue-team-resolution`
+Run: `pnpm --filter mcp-server test -- enqueue-team-resolution`
 Expected: All six tests FAIL — `enqueue_work` does not accept or store `team_id`.
 
 - [ ] **Step 3: Modify `enqueue_work`**
@@ -1280,11 +1280,11 @@ server.registerTool(
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `pnpm --filter @sapling/mcp-server test -- enqueue-team-resolution`
+Run: `pnpm --filter mcp-server test -- enqueue-team-resolution`
 Expected: All six tests PASS. Then run the full suite to make sure no existing tests broke:
 
 ```bash
-pnpm --filter @sapling/mcp-server test
+pnpm --filter mcp-server test
 ```
 
 Expected: every existing test still passes.
@@ -1361,7 +1361,7 @@ describe('list_work — team_name surfacing', () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `pnpm --filter @sapling/mcp-server test -- teams.test`
+Run: `pnpm --filter mcp-server test -- teams.test`
 Expected: New test FAILS — `team_name` is undefined on rows.
 
 - [ ] **Step 3: Modify `list_work`**
@@ -1390,8 +1390,8 @@ description:
 
 - [ ] **Step 4: Run tests**
 
-Run: `pnpm --filter @sapling/mcp-server test -- teams.test`
-Then: `pnpm --filter @sapling/mcp-server test`
+Run: `pnpm --filter mcp-server test -- teams.test`
+Then: `pnpm --filter mcp-server test`
 Expected: New test PASSES, no regressions.
 
 - [ ] **Step 5: Commit**
@@ -1803,7 +1803,7 @@ git commit -m "docs: README — tool count 36, Teams section"
 
 - [ ] **Step 1: Run the full test suite**
 
-Run: `pnpm --filter @sapling/mcp-server test`
+Run: `pnpm --filter mcp-server test`
 Expected: all tests PASS, including the new `teams.test.ts` (~19 tests) and `enqueue-team-resolution.test.ts` (6 tests). No regressions.
 
 - [ ] **Step 2: Run lint and prettier on changed code**
