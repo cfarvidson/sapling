@@ -24,7 +24,7 @@ COPY --from=builder /app/packages/mcp-server/package.json packages/mcp-server/
 COPY --from=builder /app/packages/mcp-server/dist packages/mcp-server/dist
 COPY --from=builder /app/packages/mcp-server/src/schema packages/mcp-server/dist/schema
 
-RUN pnpm install --frozen-lockfile --filter mcp-server... --prod
+RUN pnpm install --frozen-lockfile --filter mcp-server... --prod --ignore-scripts
 
 EXPOSE 3333
 CMD ["node", "packages/mcp-server/dist/index.js"]
