@@ -308,3 +308,79 @@ describe('complete_scoping', () => {
     expect(body.error.code).toBe('not_found');
   });
 });
+
+describe('get_project / list_projects', () => {
+  let db: TestDb;
+  let client: TestClient;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+  });
+
+  it('get_project returns the row with rolled-up child counts', async () => {
+    await seedApp(db, 'iris');
+    const r = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 'Pid',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    })) as { project: { id: number }; scoping_work: { id: number } };
+
+    const got = (await client.call('get_project', { id: r.project.id })) as {
+      project: { id: number };
+      plan_count: number;
+      work_counts: Record<string, number>;
+      scoping_artifact_id: number | null;
+      dod_verifier_id: number | null;
+    };
+    expect(got.project.id).toBe(r.project.id);
+    expect(got.plan_count).toBe(0);
+    // exactly one pending plan-type work item (the scoping one)
+    expect(got.work_counts.pending).toBe(1);
+    expect(got.scoping_artifact_id).toBeNull();
+    expect(got.dod_verifier_id).toBeNull();
+  });
+
+  it('get_project returns not_found for unknown id', async () => {
+    const raw = await client.callRaw('get_project', { id: 999999 });
+    expect(raw.isError).toBe(true);
+    const body = JSON.parse(raw.content[0].text) as { error: { code: string } };
+    expect(body.error.code).toBe('not_found');
+  });
+
+  it('list_projects filters by app_name and status, omits long bodies', async () => {
+    await seedApp(db, 'iris');
+    await seedApp(db, 'other');
+    await client.call('create_project', {
+      app_name: 'iris',
+      title: 'A',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    });
+    await client.call('create_project', {
+      app_name: 'other',
+      title: 'B',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    });
+    const filtered = (await client.call('list_projects', {
+      app_name: 'iris',
+    })) as Array<{ id: number; title: string; description_md?: unknown; status: string }>;
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].title).toBe('A');
+    expect(filtered[0].description_md).toBeUndefined();
+    expect(filtered[0].status).toBe('scoping');
+  });
+});

@@ -236,10 +236,99 @@ export function registerProjects(server: McpServer, db: Db): void {
     },
   );
 
-  // Stubs for the remaining seven tools — real implementations land in subsequent tasks.
-  for (const name of [
+  server.registerTool(
     'get_project',
+    {
+      description:
+        'Fetch a project plus rolled-up child counts: plan_count, work_counts grouped by status, latest scoping_artifact_id, and dod_verifier_id if present.',
+      inputSchema: { id: z.number().int().positive() },
+    },
+    async ({ id }) => {
+      const proj = await db.query(`SELECT * FROM projects WHERE id = $1`, [id]);
+      if (proj.rowCount === 0)
+        return errorToToolResult(new AppError('not_found', `project ${id} not found`));
+
+      const planCount = await db.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM plans WHERE project_id = $1`,
+        [id],
+      );
+      const workCounts = await db.query<{ status: string; n: number }>(
+        `SELECT status::text AS status, count(*)::int AS n
+           FROM work_items
+          WHERE project_id = $1
+          GROUP BY status`,
+        [id],
+      );
+      const counts: Record<string, number> = {};
+      for (const r of workCounts.rows) counts[r.status] = r.n;
+      const scoping = await db.query<{ id: number }>(
+        `SELECT a.id FROM artifacts a
+           JOIN work_items w ON w.id = a.work_item_id
+          WHERE w.project_id = $1 AND a.kind = 'scoping'
+          ORDER BY a.created_at DESC LIMIT 1`,
+        [id],
+      );
+      const verifier = await db.query<{ id: number }>(
+        `SELECT id FROM work_items WHERE project_id = $1 AND is_dod_verifier = true ORDER BY id DESC LIMIT 1`,
+        [id],
+      );
+
+      return ok({
+        project: proj.rows[0],
+        plan_count: planCount.rows[0].n,
+        work_counts: counts,
+        scoping_artifact_id: scoping.rows[0]?.id ?? null,
+        dod_verifier_id: verifier.rows[0]?.id ?? null,
+      });
+    },
+  );
+
+  const ProjectStatus = z.enum([
+    'pending',
+    'scoping',
+    'in_progress',
+    'done',
+    'blocked',
+    'cancelled',
+  ]);
+
+  server.registerTool(
     'list_projects',
+    {
+      description:
+        'List projects (titles + structured fields, no description or DoD bodies) optionally filtered by app_name or status.',
+      inputSchema: {
+        app_name: z.string().min(1).optional(),
+        status: ProjectStatus.optional(),
+      },
+    },
+    async ({ app_name, status }) => {
+      const conds: string[] = [];
+      const vals: unknown[] = [];
+      if (app_name !== undefined) {
+        vals.push(app_name);
+        conds.push(`a.name = $${vals.length}`);
+      }
+      if (status !== undefined) {
+        vals.push(status);
+        conds.push(`p.status = $${vals.length}`);
+      }
+      const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+      const { rows } = await db.query(
+        `SELECT p.id, p.title, p.status, p.app_id, a.name AS app_name,
+                p.linear_url, p.created_at, p.updated_at
+           FROM projects p
+           JOIN apps a ON a.id = p.app_id
+           ${where}
+           ORDER BY p.id ASC`,
+        vals,
+      );
+      return ok(rows);
+    },
+  );
+
+  // Stubs for the remaining five tools — real implementations land in subsequent tasks.
+  for (const name of [
     'update_project',
     'cancel_project',
     'block_project',
