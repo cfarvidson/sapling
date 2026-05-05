@@ -28,9 +28,10 @@ That gives you these `/sapling:<name>` slash commands:
 - `/sapling:work` — pull next task and execute it
 - `/sapling:plan <desc>` — enqueue a planning task
 - `/sapling:enqueue <code|review> <desc>` — enqueue a code or review task
-- `/sapling:status` — queue health
+- `/sapling:project [create|list|show|cancel|block|unblock|retry …]` — drive an intent across one or more services to a verified Definition of Done
+- `/sapling:status` — queue health (projects + work counts)
 - `/sapling:human [<id>]` — list or answer work items paused on user questions (`awaiting_input`)
-- `/sapling:queue [<work|plan> <id> [action]]` — inspect the queue and run lifecycle actions (activate, archive, update, replace, cancel, block, unblock, retry)
+- `/sapling:queue [<work|plan|project> <id> [action]]` — inspect the queue and run lifecycle actions (activate, archive, update, replace, cancel, block, unblock, retry)
 - `/sapling:rules [<service> | app <app-name>] [add|replace|remove|clear …]` — manage binding rules for an app or service
 - `/sapling:context <service>` — load service context
 - `/sapling:learn <app> [<path1> ...]` — research repos for an app; populate services, dependencies, and an architecture artifact
@@ -92,7 +93,7 @@ Set `MCP_TOKEN=...` in `.env` to require a bearer token on `/mcp`. Then update y
 
 ## Layout
 
-- `packages/mcp-server/` — Node/TypeScript MCP server (Streamable HTTP transport, 40 tools)
+- `packages/mcp-server/` — Node/TypeScript MCP server (Streamable HTTP transport, 49 tools)
 - `packages/claude-plugin/` — `.mcp.json` template + skills
 - `packages/runner/` — `sapling-runner` daemon: polls the queue, spawns coding-agent subprocesses up to `max_concurrent`, reaps stuck claims each tick
 
@@ -174,6 +175,45 @@ A few invariants worth knowing:
 - **Deleting a team is non-destructive.** `work_items.team_id` is `ON DELETE SET NULL`, so referencing items revert to solo agent execution rather than failing.
 
 See `docs/superpowers/specs/2026-04-29-agent-teams-design.md` for the full design rationale.
+
+## Projects
+
+A **project** is the workflow-driven entity that takes one intent — an idea, a Linear ticket, a bug — and drives it across one or more services to a verified Definition of Done. Where a single work item is "do this task", a project is "ship this outcome": Sapling auto-enqueues per-service plans, then code, then per-plan reviews, and finally a Definition-of-Done verifier that flips the project to `done`.
+
+```text
+/sapling:project create <app> <title>      # interactive: description, DoD, optional service list
+/sapling:project list [<app>] [status <s>]
+/sapling:project show <id>
+/sapling:project cancel <id> [<reason>]    # cascading cancel of non-terminal children
+/sapling:project block <id> "<reason>"     # pause auto-enqueue triggers
+/sapling:project unblock <id>              # resume; replays missed triggers
+/sapling:project retry <id>                # re-open a project that hit done prematurely
+```
+
+Two creation paths:
+
+- **Scoping path (default).** If you don't know the affected services yet, `create_project` enqueues one `plan`-type scoping work item. The scoping agent figures out which services are touched, then calls `complete_scoping(project_id, service_ids[])` which fans out one `plan` work item per service and flips the project to `in_progress`.
+- **Fast path.** If you already know the services, pass them at create time and Sapling skips scoping — per-service plan work items are enqueued immediately and the project starts in `in_progress`.
+
+From there the auto-enqueue triggers in `complete_work` do the rest:
+
+- When every `code` item under a single plan completes, one `review` work item is auto-enqueued for that plan.
+- When every non-verifier work item under the project completes, one final `review` is auto-enqueued with `is_dod_verifier = true`, titled "Verify Definition of Done for project N: …". When that verifier flips to `completed`, the project flips to `done`.
+
+A few invariants worth knowing:
+
+- **Definition of Done is non-negotiable.** The DoD markdown is loaded into every child agent's operating instructions by `/sapling:work`, and gates the final transition to `done`.
+- **Linear is pull-based.** If the project has a `linear_url`, agents post status comments back via the Linear MCP they already have — the Sapling server itself never makes outbound calls.
+- **`block_project` pauses the triggers, not the children.** Children keep running, but auto-enqueue is paused while blocked; `unblock_project` replays any triggers that fired during the blocked window.
+- **`cancel_project` cascades.** Non-terminal child work items get `cancel_work`-ed in the same transaction. Already-terminal children are left alone.
+- **Project status flows through `pending → scoping | in_progress → done`**, with `blocked` and `cancelled` as side states. Status is not patchable through `update_project` — use the lifecycle tools.
+
+Inspect a project's tree with:
+
+```text
+/sapling:queue project <id>           # plans + work items, grouped, recursive
+/sapling:status                       # projects section grouped by app + status, above the work counts
+```
 
 ## Tests
 
