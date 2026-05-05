@@ -55,7 +55,6 @@ async function seedApp(db: TestDb, name = 'iris'): Promise<number> {
   return r.rows[0].id;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function seedService(db: TestDb, appId: number, name: string): Promise<number> {
   const r = await db.pool.query<{ id: number }>(
     `INSERT INTO services(app_id, name) VALUES ($1, $2) RETURNING id`,
@@ -138,5 +137,76 @@ describe('create_project — scoping path', () => {
     expect(raw.isError).toBe(true);
     const body = JSON.parse(raw.content[0].text) as { error: { code: string } };
     expect(body.error.code).toBe('invalid_input');
+  });
+});
+
+describe('create_project — fast path (service_ids supplied)', () => {
+  let db: TestDb;
+  let client: TestClient;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+  });
+
+  it('skips scoping and fans out one plan work item per service', async () => {
+    const appId = await seedApp(db, 'iris');
+    const a = await seedService(db, appId, 'svc-a');
+    const b = await seedService(db, appId, 'svc-b');
+
+    const result = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 'Bump dep',
+      description_md: 'Bump foo to 2.0',
+      definition_of_done_md: 'foo@2.0 used everywhere; tests pass.',
+      service_ids: [a, b],
+    })) as {
+      project: { id: number; status: string };
+      plan_work_items: Array<{ id: number; service_id: number; type: string; project_id: number }>;
+    };
+
+    expect(result.project.status).toBe('in_progress');
+    expect(result.plan_work_items).toHaveLength(2);
+    expect(new Set(result.plan_work_items.map((w) => w.service_id))).toEqual(new Set([a, b]));
+    for (const w of result.plan_work_items) {
+      expect(w.type).toBe('plan');
+      expect(w.project_id).toBe(result.project.id);
+    }
+
+    const noScoping = await db.pool.query(
+      `SELECT count(*)::int AS n FROM work_items WHERE project_id=$1 AND title LIKE 'Scope project%'`,
+      [result.project.id],
+    );
+    expect(noScoping.rows[0].n).toBe(0);
+  });
+
+  it('rejects service_ids that belong to a different app', async () => {
+    const irisId = await seedApp(db, 'iris');
+    const otherId = await seedApp(db, 'other');
+    const otherSvc = await seedService(db, otherId, 'foreign');
+    void irisId;
+
+    const raw = await client.callRaw('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+      service_ids: [otherSvc],
+    });
+    expect(raw.isError).toBe(true);
+    const body = JSON.parse(raw.content[0].text) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('invalid_input');
+    expect(body.error.message).toMatch(/service .* does not belong to app/i);
   });
 });

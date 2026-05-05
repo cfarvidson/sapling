@@ -47,8 +47,30 @@ export function registerProjects(server: McpServer, db: Db): void {
         const appId = appLookup.rows[0].id;
 
         const fastPath = (input.service_ids?.length ?? 0) > 0;
-        const initialStatus = fastPath ? 'in_progress' : 'scoping';
+        if (fastPath) {
+          const services = await client.query<{ id: number; app_id: number; name: string }>(
+            `SELECT id, app_id, name FROM services WHERE id = ANY($1::int[])`,
+            [input.service_ids],
+          );
+          if (services.rowCount !== input.service_ids!.length) {
+            await client.query('ROLLBACK');
+            return errorToToolResult(
+              new AppError('not_found', 'one or more service_ids not found'),
+            );
+          }
+          const wrong = services.rows.find((s) => s.app_id !== appId);
+          if (wrong) {
+            await client.query('ROLLBACK');
+            return errorToToolResult(
+              new AppError(
+                'invalid_input',
+                `service ${wrong.id} (${wrong.name}) does not belong to app ${input.app_name}`,
+              ),
+            );
+          }
+        }
 
+        const initialStatus = fastPath ? 'in_progress' : 'scoping';
         const projInsert = await client.query(
           `INSERT INTO projects(app_id, title, description_md, definition_of_done_md, linear_url, status)
            VALUES ($1, $2, $3, $4, $5, $6)
@@ -83,11 +105,27 @@ export function registerProjects(server: McpServer, db: Db): void {
           return ok({ project, scoping_work: scoping.rows[0] });
         }
 
-        // Fast path implemented in Task 4.
-        await client.query('ROLLBACK');
-        return errorToToolResult(
-          new AppError('internal', 'fast path not yet implemented (Task 4)'),
-        );
+        const planWorkItems = [];
+        for (const serviceId of input.service_ids!) {
+          const w = await client.query(
+            `INSERT INTO work_items(type, title, description_markdown, service_id, project_id)
+             VALUES ('plan', $1, $2, $3, $4)
+             RETURNING *`,
+            [
+              `Plan service ${serviceId} for project ${project.id}: ${project.title}`,
+              `Per-service plan for project ${project.id} (service ${serviceId}).\n\n` +
+                `Description:\n\n${project.description_md}\n\n` +
+                `Definition of Done:\n\n${project.definition_of_done_md}\n\n` +
+                `When you finish, call create_plan(project_id=${project.id}, service_id=${serviceId}, ...) ` +
+                `and enqueue code work items beneath the new plan id.`,
+              serviceId,
+              project.id,
+            ],
+          );
+          planWorkItems.push(w.rows[0]);
+        }
+        await client.query('COMMIT');
+        return ok({ project, plan_work_items: planWorkItems });
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
