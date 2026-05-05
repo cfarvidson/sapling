@@ -70,6 +70,20 @@ Step 3 below MUST consume the values produced by these checks; it must NOT re-de
 
 If `team_id` is null, skip this step entirely and continue in **solo mode** (everything below behaves as it always has).
 
+4c. **Load project (if assigned).** If the claimed work item has `project_id`, call `mcp__sapling__get_project({ id: project_id })`. The result anchors what success looks like for this work item.
+
+- Treat the project's `description_md` and especially `definition_of_done_md` as binding context. Every decision you make on this work item — what to plan, what to code, what to flag in review — must serve the DoD.
+- If `get_project` returns `scoping_artifact_id` non-null, also call `mcp__sapling__get_artifact({ id: scoping_artifact_id })` and read the body before doing anything else. The scoping artifact tells you which services the project touches and what each one needs.
+- If `get_project` returns a non-null `linear_url` on the project, treat the following as a non-negotiable rule for this work item:
+  > _"This work item is part of project Sapling project N (`<title>`), tracked at `<linear_url>`. When you call `complete_work`, also post a brief comment on the Linear ticket summarising what you did, using `mcp__linear-work__save_comment` with the parsed Linear issue id. If your work is the DoD verifier (`is_dod_verifier=true`), the Linear comment is the canonical 'project done' summary."_
+  > Apply the GitHub-id rule above when composing the Linear body — write `Sapling project N` / `Sapling work N`, not `#N`.
+- If the work item is `is_dod_verifier=true` (this only happens for `review` items auto-enqueued at the end of a project), additional rules apply:
+  - Re-read `definition_of_done_md` and check each criterion against shipped reality (open and merged PRs, tests, deployed code).
+  - On success: complete normally with a `summary_markdown` listing each criterion and the evidence you saw. The server will flip the project to `done`.
+  - On failure: attach a `dod_gaps` artifact (`mcp__sapling__attach_artifact(kind='dod_gaps', work_item_id=<id>, body_markdown=<numbered list of unmet criteria>)`) and `complete_work` normally. The project will stay `in_progress` and a human can `enqueue_work` more work + `retry_project`. Do NOT call `fail_work` for a failed DoD verification — failure here is a known, structured outcome, not an internal error.
+
+If `project_id` is null, skip this step entirely; the rest of the skill behaves exactly as it always has.
+
 5. **Resume context: integrate prior questions and answers.** Call `mcp__sapling__list_artifacts({ work_item_id: <id> })`. If both a `pending_questions` and a newer `answers` artifact exist (compare `created_at`), fetch both bodies via `mcp__sapling__get_artifact` and treat the answers as authoritative resolutions of the questions before continuing. Skip if either is missing — the item is being worked on for the first time.
 6. Branch on `type`:
 
