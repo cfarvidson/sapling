@@ -36,6 +36,7 @@ Sapling is an AI-native dev workbench: a Postgres-backed knowledge store and typ
 2. **One place for in-flight dev work.** Typed work items (`plan` / `code` / `review`) with cross-references so chains stay coherent.
 3. **One place for product knowledge.** Apps and the services that compose them, with enough metadata for an agent to ground itself before acting.
 4. **One verb to start work.** `/sapling:work` claims the next pending task and executes it in the current session.
+5. **One verb to ship an intent.** `/sapling:project create` takes an idea / Linear ticket / bug and Sapling drives it across one or more services to a verified Definition of Done.
 
 ### Non-goals (v1)
 
@@ -43,7 +44,7 @@ Sapling is an AI-native dev workbench: a Postgres-backed knowledge store and typ
 - Multi-user; auth beyond an optional bearer token.
 - Mirroring or storing repo source code (real code stays in git).
 - Vector search / embeddings.
-- Webhooks, event bus, metrics export, outbound transports of any kind (discoverability is pull-based).
+- Webhooks, event bus, metrics export, outbound transports of any kind (discoverability is pull-based). Project-level Linear updates are emitted by agents through the Linear MCP they already have, not by the Sapling server — see [§ 12 Claude plugin](#12-claude-plugin).
 - Automated backups (the bind-mounted `./data/postgres` volume is the recovery surface).
 - A workflow engine. Sapling does not enforce role ordering or completion gates inside teams.
 - A retry framework. Failed items are not auto-retried; retry is an explicit caller decision (`retry_work` or a fresh `enqueue_work`).
@@ -108,6 +109,7 @@ sapling/
         logger.ts               # pino instance
         schema/                 # NNN_*.sql, applied lexicographically
         tools/                  # one file per tool family + register.ts entrypoint
+          projects.ts           # all 9 project tools + advanceProjectAfterWorkCompletion helper
       test/                     # vitest + testcontainers
       Dockerfile
     runner/                     # sapling-runner: polling daemon
@@ -119,7 +121,7 @@ sapling/
       test/
     claude-plugin/              # MCP wiring + slash-command skills
       .mcp.json                 # default Claude Code MCP config (http://localhost:3333/mcp)
-      skills/                   # context, enqueue, human, learn, plan, queue, rules, status, teams, work
+      skills/                   # context, enqueue, human, learn, plan, project, queue, rules, status, teams, work
       README.md
 
   .claude-plugin/
@@ -136,14 +138,15 @@ sapling/
 
 Authoritative source: `packages/mcp-server/src/schema/*.sql`. The migrations applied so far are:
 
-| File                            | Effect                                                                                              |
-| ------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `001_init.sql`                  | Initial schema: `apps`, `services`, `plans`, `work_items`, `artifacts`, `_migrations`; enums.       |
-| `002_app_conventions.sql`       | Adds `apps.conventions TEXT`.                                                                       |
-| `003_work_blocked.sql`          | Adds `'blocked'` to the `work_status` enum.                                                         |
-| `004_runner_groundwork.sql`     | Adds `attempt_count`, `next_retry_at`, `claim_expires_at` to `work_items`; creates `runner_config`. |
-| `005_awaiting_input_status.sql` | Adds `'awaiting_input'` to the `work_status` enum.                                                  |
-| `006_teams.sql`                 | Creates `teams`, `team_roles`, `team_defaults`; adds `work_items.team_id`.                          |
+| File                            | Effect                                                                                                                           |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `001_init.sql`                  | Initial schema: `apps`, `services`, `plans`, `work_items`, `artifacts`, `_migrations`; enums.                                    |
+| `002_app_conventions.sql`       | Adds `apps.conventions TEXT`.                                                                                                    |
+| `003_work_blocked.sql`          | Adds `'blocked'` to the `work_status` enum.                                                                                      |
+| `004_runner_groundwork.sql`     | Adds `attempt_count`, `next_retry_at`, `claim_expires_at` to `work_items`; creates `runner_config`.                              |
+| `005_awaiting_input_status.sql` | Adds `'awaiting_input'` to the `work_status` enum.                                                                               |
+| `006_teams.sql`                 | Creates `teams`, `team_roles`, `team_defaults`; adds `work_items.team_id`.                                                       |
+| `007_projects.sql`              | Creates `projects`, `project_status` enum, `project_id` FKs on `plans` and `work_items`, `is_dod_verifier` flag on `work_items`. |
 
 ### Tables
 
@@ -151,6 +154,7 @@ Authoritative source: `packages/mcp-server/src/schema/*.sql`. The migrations app
 - **`services`** — components of an app. `(app_id, name)` unique; `app_id → apps.id ON DELETE CASCADE`. Carries `repo_url`, `description`, `tech_stack TEXT[]`, `depends_on TEXT[]` (service names, not ids), `conventions`.
 - **`plans`** — markdown plan documents. `parent_plan_id → plans.id ON DELETE SET NULL`, `service_id → services.id ON DELETE SET NULL`. Indexed by `service_id` and `status`.
 - **`work_items`** — the queue. Detailed below.
+- **`projects`** — top-level intents. `app_id → apps.id ON DELETE CASCADE` (NOT NULL — projects are scoped to one app). Carries `title`, `description_md`, `definition_of_done_md`, optional `linear_url`, `status` (see enum), `failure_reason`. See [§ 7](#7-mcp-tool-surface) and [§ 8](#8-work-item-lifecycle) for behavior.
 - **`artifacts`** — markdown blobs (review notes, pending questions, answers, architecture summaries, drafts). Optional FKs to `work_item_id`, `plan_id`, `service_id` — all `ON DELETE SET NULL`. Free-form `kind TEXT`. Multiple artifacts of the same kind per parent are allowed.
 - **`teams` / `team_roles` / `team_defaults`** — see [§ Teams](#10-teams).
 - **`runner_config`** — singleton (`PRIMARY KEY DEFAULT 1 CHECK (id = 1)`). See [§ Configuration surface](#13-configuration-surface).
@@ -159,10 +163,11 @@ Authoritative source: `packages/mcp-server/src/schema/*.sql`. The migrations app
 ### Enums
 
 ```sql
-plan_status   = 'draft' | 'active' | 'completed' | 'archived'
-work_type     = 'plan'  | 'code'   | 'review'
-work_status   = 'pending' | 'claimed' | 'completed' | 'failed' | 'cancelled'
-              | 'blocked' | 'awaiting_input'
+plan_status    = 'draft' | 'active' | 'completed' | 'archived'
+work_type      = 'plan'  | 'code'   | 'review'
+work_status    = 'pending' | 'claimed' | 'completed' | 'failed' | 'cancelled'
+               | 'blocked' | 'awaiting_input'
+project_status = 'pending' | 'scoping' | 'in_progress' | 'done' | 'blocked' | 'cancelled'
 ```
 
 ### `work_items` columns
@@ -177,6 +182,8 @@ priority             int                 -- default 0; higher first
 service_id           int  → services    ON DELETE SET NULL
 plan_id              int  → plans       ON DELETE SET NULL
 team_id              int  → teams       ON DELETE SET NULL  (006)
+project_id           int  → projects   ON DELETE SET NULL   (007)
+is_dod_verifier      boolean default false                   (007)
 branch               text
 pr_url               text
 claimed_at           timestamptz
@@ -197,10 +204,15 @@ updated_at           timestamptz default now()
 - `work_claim_expiry_idx` — partial index `(claim_expires_at) WHERE status = 'claimed'`. Used by `reap_stuck_claims`.
 - `work_team_idx` — partial index `(team_id) WHERE team_id IS NOT NULL`.
 - `plans_service_idx`, `plans_status_idx`, `artifacts_work_idx`, `artifacts_plan_idx`.
+- `plans_project_idx` — partial index on `plans(project_id)` where `project_id IS NOT NULL`.
+- `work_project_idx` — partial index on `work_items(project_id)` where `project_id IS NOT NULL`.
+- `projects_status_idx` — broad project status filter.
 
 ### FK convention
 
 All FKs are `ON DELETE SET NULL` except `services.app_id` (CASCADE) and intra-team rows (`team_roles.team_id`, `team_defaults.team_id` CASCADE; `team_defaults.app_id` CASCADE). Deleting a plan, team, or service must not nuke work history; deleting an app does cascade through services and team-app scoping.
+
+`projects.app_id` is `ON DELETE CASCADE` and `NOT NULL` (mirrors `services.app_id`); deleting an app cascades through services and projects. Plans and work items hold `project_id` as `ON DELETE SET NULL` so deleting a project preserves history.
 
 ## 6. MCP transport and auth
 
@@ -211,7 +223,7 @@ All FKs are `ON DELETE SET NULL` except `services.app_id` (CASCADE) and intra-te
 
 ## 7. MCP tool surface
 
-**Total: 40 tools.** Authoritative source: `packages/mcp-server/src/tools/`. Tools are registered via `registerAllTools` in `tools/register.ts`. Every call is instrumented with structured `tool_call` log lines (`{ tool, durationMs, ok }`).
+**Total: 49 tools.** Authoritative source: `packages/mcp-server/src/tools/`. Tools are registered via `registerAllTools` in `tools/register.ts`. Every call is instrumented with structured `tool_call` log lines (`{ tool, durationMs, ok }`).
 
 All inputs validated with `zod`. All success responses are JSON in a `text` content block. Errors return `{ error: { code, message, issues? } }` with `isError: true` (see [§ Error handling](#14-error-handling-logging-observability)).
 
@@ -239,19 +251,19 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 
 ### Work queue (`tools/work.ts`) — 11 tools
 
-| Tool                                                                                                            | Purpose                                                                                                                                                                                                                                                                   |
-| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enqueue_work(type, title, description_markdown, priority?, service_id?, plan_id?, branch?, pr_url?, team_id?)` | Add a task. Resolves `team_id` from defaults at insert time (see [§ Teams](#10-teams)).                                                                                                                                                                                   |
-| `claim_next_work(claimed_by, types?, service_id?, app_id?, app_name?)`                                          | **Atomic.** `FOR UPDATE SKIP LOCKED`. Skips items with future `next_retry_at` or `attempt_count >= max_claim_attempts`. Returns next pending item or `null`. Sets `status='claimed'`, `claimed_at`, `claimed_by`, `claim_expires_at`, and **increments `attempt_count`**. |
-| `get_work(id)`                                                                                                  | Fetch one.                                                                                                                                                                                                                                                                |
-| `list_work(status?, type?, service_id?, plan_id?)`                                                              | Filtered list. Joins `teams` to surface `team_name`.                                                                                                                                                                                                                      |
-| `complete_work(id, summary_markdown?, artifact_id?)`                                                            | Mark `completed`. Optional summary stored as artifact, or link an existing artifact.                                                                                                                                                                                      |
-| `fail_work(id, reason)`                                                                                         | Set `failed`. Failed items are not auto-retried.                                                                                                                                                                                                                          |
-| `cancel_work(id, reason?)`                                                                                      | Soft delete equivalent.                                                                                                                                                                                                                                                   |
-| `block_work(id, reason)`                                                                                        | Set `blocked` from `pending` / `claimed` / `blocked` / `failed`. Reason stored in `failure_reason` (terminal `completed` / `cancelled` items rejected with `conflict`).                                                                                                   |
-| `unblock_work(id)`                                                                                              | `blocked → pending` only.                                                                                                                                                                                                                                                 |
-| `retry_work(id, after_ms?)`                                                                                     | Re-queue from `failed` / `blocked` / `claimed` / `awaiting_input` to `pending`. Optional `after_ms` schedules `next_retry_at`. **Does not mutate `attempt_count`** — explicit retries are clean retries.                                                                  |
-| `reap_stuck_claims(now?)`                                                                                       | Sweep `claimed` items past `claim_expires_at`: → `failed` if `attempt_count >= max_claim_attempts`, else → `pending`. Does not bump `attempt_count` (claim already did). Called by the runner each tick.                                                                  |
+| Tool                                                                                                                         | Purpose                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enqueue_work(type, title, description_markdown, priority?, service_id?, plan_id?, branch?, pr_url?, team_id?, project_id?)` | Add a task. Resolves `team_id` from defaults at insert time (see [§ Teams](#10-teams)).                                                                                                                                                                                   |
+| `claim_next_work(claimed_by, types?, service_id?, app_id?, app_name?)`                                                       | **Atomic.** `FOR UPDATE SKIP LOCKED`. Skips items with future `next_retry_at` or `attempt_count >= max_claim_attempts`. Returns next pending item or `null`. Sets `status='claimed'`, `claimed_at`, `claimed_by`, `claim_expires_at`, and **increments `attempt_count`**. |
+| `get_work(id)`                                                                                                               | Fetch one.                                                                                                                                                                                                                                                                |
+| `list_work(status?, type?, service_id?, plan_id?)`                                                                           | Filtered list. Joins `teams` to surface `team_name`.                                                                                                                                                                                                                      |
+| `complete_work(id, summary_markdown?, artifact_id?)`                                                                         | Mark `completed`. Optional summary stored as artifact, or link an existing artifact.                                                                                                                                                                                      |
+| `fail_work(id, reason)`                                                                                                      | Set `failed`. Failed items are not auto-retried.                                                                                                                                                                                                                          |
+| `cancel_work(id, reason?)`                                                                                                   | Soft delete equivalent.                                                                                                                                                                                                                                                   |
+| `block_work(id, reason)`                                                                                                     | Set `blocked` from `pending` / `claimed` / `blocked` / `failed`. Reason stored in `failure_reason` (terminal `completed` / `cancelled` items rejected with `conflict`).                                                                                                   |
+| `unblock_work(id)`                                                                                                           | `blocked → pending` only.                                                                                                                                                                                                                                                 |
+| `retry_work(id, after_ms?)`                                                                                                  | Re-queue from `failed` / `blocked` / `claimed` / `awaiting_input` to `pending`. Optional `after_ms` schedules `next_retry_at`. **Does not mutate `attempt_count`** — explicit retries are clean retries.                                                                  |
+| `reap_stuck_claims(now?)`                                                                                                    | Sweep `claimed` items past `claim_expires_at`: → `failed` if `attempt_count >= max_claim_attempts`, else → `pending`. Does not bump `attempt_count` (claim already did). Called by the runner each tick.                                                                  |
 
 ### Artifacts (`tools/artifacts.ts`) — 3 tools
 
@@ -289,6 +301,22 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 | `remove_team_role(id)`                                                   | Delete a role.                                                                               |
 | `set_team_default(work_type, team_id, app_id?)`                          | Upsert `(app_id?, work_type) → team_id`.                                                     |
 | `clear_team_default(work_type, app_id?)`                                 | Remove a default.                                                                            |
+
+> The `enqueue_work` signature accepts an optional `project_id`; when set, the work item participates in project auto-enqueue triggers (see [§ 8](#8-work-item-lifecycle)).
+
+### Projects (`tools/projects.ts`) — 9 tools
+
+| Tool                                                                                                | Purpose                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create_project(app_name, title, description_md, definition_of_done_md, linear_url?, service_ids?)` | Atomic. Validates each `service_id` belongs to `app_name`. If `service_ids` provided → status starts at `in_progress`, fans out one `plan` work item per service. Otherwise → status starts at `scoping`, auto-enqueues one `plan`-type scoping work item titled "Scope project N: <title>" with `project_id` set. Returns the created project plus any auto-enqueued work item. |
+| `complete_scoping(project_id, service_ids[])`                                                       | Atomic. Called by the scoping agent after writing its `scoping` artifact. Validates project status is `scoping`. Validates each `service_id` belongs to the project's app. Enqueues one `plan` work item per service with `project_id` set. Flips project to `in_progress`.                                                                                                      |
+| `get_project(id)`                                                                                   | Returns the project plus rolled-up child counts: `{ project, plan_count, work_counts: { pending, claimed, completed, ... }, scoping_artifact_id?, dod_verifier_id? }`.                                                                                                                                                                                                           |
+| `list_projects(app_name?, status?)`                                                                 | Filtered list. Titles + counts only; no description or DoD bodies.                                                                                                                                                                                                                                                                                                               |
+| `update_project(id, title?, description_md?, definition_of_done_md?, linear_url?)`                  | Patch. `status` and `app_id` are not patchable — status changes go through lifecycle tools.                                                                                                                                                                                                                                                                                      |
+| `cancel_project(id, reason?)`                                                                       | Atomic + cascading. Sets project `cancelled`. Cascades `cancel_work` to all non-terminal child work items. Idempotent on already-cancelled.                                                                                                                                                                                                                                      |
+| `block_project(id, reason)`                                                                         | Sets project `blocked` from `scoping` / `in_progress`. Does not cascade. Auto-enqueue triggers paused while blocked. `failure_reason` records the reason.                                                                                                                                                                                                                        |
+| `unblock_project(id)`                                                                               | Recomputes status (`scoping` if a scoping child is in-flight, else `in_progress`). Replays missed auto-enqueue triggers.                                                                                                                                                                                                                                                         |
+| `retry_project(id)`                                                                                 | For a project that hit `done` but isn't actually done. Status → `in_progress`, existing DoD verifier `retry_work`-ed.                                                                                                                                                                                                                                                            |
 
 ## 8. Work-item lifecycle
 
@@ -370,6 +398,43 @@ In both cases `claimed_at`, `claimed_by`, `claim_expires_at` are cleared. **The 
 - **`cancelled`** is terminal; `retry_work` does **not** re-open `cancelled` (only `failed` / `blocked` / `claimed` / `awaiting_input`).
 - **`blocked`** is non-terminal; only `unblock_work` clears it back to `pending`. Used when an item depends on something outside Sapling.
 - **`retry_work`** is a clean retry: clears `failure_reason`, `claimed_*`, `claim_expires_at`; sets `next_retry_at` if `after_ms` was passed; does **not** mutate `attempt_count`. Combined with `claim_next_work`'s attempt-cap filter, this means an operator who wants to give a stuck item a fresh budget should retry **and** also reset `attempt_count` directly via psql (no MCP tool exposes this — by design).
+
+### Project-driven auto-enqueue triggers
+
+Projects steer what gets enqueued and when. The logic concentrates in two tool implementations:
+
+1. **`complete_scoping(project_id, service_ids[])`** — fans out one `plan` work item per service with `project_id` set, then flips the project from `scoping` to `in_progress`. The scoping agent's separate `complete_work` on its own work item is unaffected.
+2. **`complete_work(id, ...)`** — if the completed item has a `project_id`, calls `advanceProjectAfterWorkCompletion(client, projectId, completedWork)` inside the same transaction. That helper fires these checks in order:
+   - **DoD-verifier completed** (`is_dod_verifier = true`) → flip project to `done`.
+   - **Per-plan review** — if the completed item is `code` and every code work item under the same `plan_id` is now completed, auto-enqueue one `review` work item with `project_id` linked to that plan.
+   - **DoD verifier** — if the completed item is a non-verifier `review` and every non-verifier work item under the project is now completed, auto-enqueue one final `review` with `is_dod_verifier = true`, titled "Verify Definition of Done for project N: \<title\>."
+   - **Blocked projects** — while a project is `blocked`, the helper is a no-op; `unblock_project` re-runs it once to catch up on any triggers that fired during the blocked window.
+
+**Project lifecycle state diagram:**
+
+```
+                   create_project
+                         │
+                         ▼
+   ┌── (service_ids passed) ──> in_progress ──┐
+   │                                          │
+   ▼                                          │
+scoping ── complete_scoping ──────────────────┤
+   │                                          │
+   ▼                                          ▼
+   └─────────── all child plans done ──> auto-enqueue DoD verifier
+                                                   │
+                                                   ▼
+                                        [verifier completes]
+                                                   │
+                                  ┌────────────────┼────────────────┐
+                                  ▼                                 ▼
+                                done                       stays in_progress
+                                                          (writes dod_gaps artifact)
+
+   block_project   ──> blocked  ── unblock_project ──> (recomputed prior state)
+   cancel_project  ──> cancelled  (cascades cancel_work to non-terminal children)
+```
 
 ## 9. Human-in-the-loop
 
@@ -506,18 +571,21 @@ Each spawned agent self-claims via `claim_next_work`. The runner does not pre-al
 - `.mcp.json` template wiring `sapling` to `http://localhost:3333/mcp`.
 - Slash-command skills under `skills/`. Each is a thin skill that invokes one or more MCP tools.
 
-| Slash command                                                           | Wraps / does                                                                                                           |
-| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `/sapling:work`                                                         | `claim_next_work`, then branches on `type` and `team_id` (lead mode if set). Executes in the current Claude session.   |
-| `/sapling:plan <desc>`                                                  | `enqueue_work(type='plan', ...)`.                                                                                      |
-| `/sapling:enqueue <code\|review> <desc>`                                | `enqueue_work(...)`. Both `enqueue` and `plan` accept an optional `team <name>` token.                                 |
-| `/sapling:status`                                                       | `list_work` + counts by status (`pending` / `claimed` / `awaiting_input` / `blocked` / `failed`).                      |
-| `/sapling:human [<id>]`                                                 | List `awaiting_input` items, or fetch `pending_questions` and submit `provide_human_input(answers)` in-session.        |
-| `/sapling:queue [<work\|plan> <id> [action]]`                           | Inspect queue or run lifecycle actions (activate, archive, update, replace, cancel, block, unblock, retry).            |
-| `/sapling:rules [<service>\|app <app>] [add\|replace\|remove\|clear …]` | Manage binding rules attached to an app or service.                                                                    |
-| `/sapling:context <service>`                                            | `get_service` + `list_plans(service_id)` + recent artifacts → loaded into the conversation.                            |
-| `/sapling:learn <app> [<path1> ...]`                                    | Research local repos for an app; populates services, dependencies, and an `architecture` artifact. See the design doc. |
-| `/sapling:teams`                                                        | CRUD for teams (mirrors `/sapling:rules`).                                                                             |
+| Slash command                                                           | Wraps / does                                                                                                                                                                                                                                                                                                                            |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/sapling:work`                                                         | `claim_next_work`, then branches on `type` and `team_id` (lead mode if set). Executes in the current Claude session.                                                                                                                                                                                                                    |
+| `/sapling:plan <desc>`                                                  | `enqueue_work(type='plan', ...)`.                                                                                                                                                                                                                                                                                                       |
+| `/sapling:enqueue <code\|review> <desc>`                                | `enqueue_work(...)`. Both `enqueue` and `plan` accept an optional `team <name>` token.                                                                                                                                                                                                                                                  |
+| `/sapling:status`                                                       | `list_work` + counts by status (`pending` / `claimed` / `awaiting_input` / `blocked` / `failed`).                                                                                                                                                                                                                                       |
+| `/sapling:human [<id>]`                                                 | List `awaiting_input` items, or fetch `pending_questions` and submit `provide_human_input(answers)` in-session.                                                                                                                                                                                                                         |
+| `/sapling:queue [<work\|plan> <id> [action]]`                           | Inspect queue or run lifecycle actions (activate, archive, update, replace, cancel, block, unblock, retry).                                                                                                                                                                                                                             |
+| `/sapling:rules [<service>\|app <app>] [add\|replace\|remove\|clear …]` | Manage binding rules attached to an app or service.                                                                                                                                                                                                                                                                                     |
+| `/sapling:context <service>`                                            | `get_service` + `list_plans(service_id)` + recent artifacts → loaded into the conversation.                                                                                                                                                                                                                                             |
+| `/sapling:learn <app> [<path1> ...]`                                    | Research local repos for an app; populates services, dependencies, and an `architecture` artifact. See the design doc.                                                                                                                                                                                                                  |
+| `/sapling:teams`                                                        | CRUD for teams (mirrors `/sapling:rules`).                                                                                                                                                                                                                                                                                              |
+| `/sapling:project [<args>]`                                             | CRUD for projects (`create_project`, `complete_scoping` is invoked by `/sapling:work`-claimed scoping items, `cancel_project`, `block_project`, `unblock_project`, `retry_project`). Pull-on-create from Linear via `mcp__linear-work__get_issue`; agent-side comments back to Linear via the binding rule injected by `/sapling:work`. |
+
+Three existing skills are extended by the projects feature: **`/sapling:work`** prepends the project's `title`, `description_md`, and `definition_of_done_md` to the agent's operating instructions when the claimed item has a `project_id`, and appends a Linear binding rule if `linear_url` is set. **`/sapling:status`** adds a Projects section above the work-queue counts, grouped by app and status. **`/sapling:queue`** gains `/sapling:queue project <id>` to drill into a project's child plans and work items recursively.
 
 Marketplace entry lives at `.claude-plugin/marketplace.json` and is installed via `/plugin marketplace add cfarvidson/sapling` then `/plugin install sapling@sapling`.
 
@@ -546,13 +614,13 @@ Every tool returns either `{ content: [{ type: 'text', text: <json> }] }` on suc
 
 Error codes (`packages/mcp-server/src/errors.ts`):
 
-| Code            | Meaning                                                                                 |
-| --------------- | --------------------------------------------------------------------------------------- |
-| `invalid_input` | `zod` validation failure or domain-level invalid input (e.g. team scoped to wrong app). |
-| `not_found`     | Lookup by id/name returned nothing, or FK target missing (`23503`).                     |
-| `conflict`      | Unique constraint violation (`23505`).                                                  |
-| `claim_race`    | `claim_next_work` race lost. **Returned as `null`, not as an error**, per design.       |
-| `internal`      | Anything else. Full stack logged server-side; generic message returned to caller.       |
+| Code            | Meaning                                                                                                                                                                                                                                                                    |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_input` | `zod` validation failure or domain-level invalid input (e.g. team scoped to wrong app). For projects: `service_ids` containing a service that doesn't belong to the project's `app_id`; empty `definition_of_done_md`; `complete_scoping` called with empty `service_ids`. |
+| `not_found`     | Lookup by id/name returned nothing, or FK target missing (`23503`). For projects: unknown project id in `get_project`, `update_project`, `cancel_project`, `block_project`, `unblock_project`, or `retry_project`.                                                         |
+| `conflict`      | Unique constraint violation (`23505`). For projects: `complete_scoping` on a project not in `scoping` status; `block_project` from terminal `done` / `cancelled`. `cancel_project` is idempotent — no `conflict` on already-cancelled.                                     |
+| `claim_race`    | `claim_next_work` race lost. **Returned as `null`, not as an error**, per design. Projects do not go through `claim_next_work`.                                                                                                                                            |
+| `internal`      | Anything else. Full stack logged server-side; generic message returned to caller.                                                                                                                                                                                          |
 
 ### Logging
 
@@ -620,3 +688,4 @@ The dated specs in `docs/superpowers/specs/` are the source rationale for the de
 - `2026-04-28-sapling-mcp-dev-workbench-design.md` — original workbench design (architecture, initial schema, tool families, error model).
 - `2026-04-28-sapling-learn-design.md` — `/sapling:learn` design (detection rules, merge semantics on re-run, architecture-artifact format).
 - `2026-04-29-agent-teams-design.md` — teams design (lead-as-coordinator pattern, resolve-at-enqueue, ON DELETE SET NULL rationale, rejected alternatives).
+- `2026-05-05-projects-design.md` — projects design (workflow-driven intent objects: scoping → per-service plans → code → per-plan reviews → DoD verifier).

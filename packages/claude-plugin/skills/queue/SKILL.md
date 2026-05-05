@@ -13,6 +13,7 @@ Surface and edit Sapling state. `list_work` / `list_plans` show metadata only �
 /sapling:queue                              — overview (active queue + open plans)
 /sapling:queue work <id>                    — show one work item
 /sapling:queue plan <id>                    — show one plan (full body)
+/sapling:queue project <id>                 — drill into a project (children recursively)
 /sapling:queue plan <id> activate              — draft → active
 /sapling:queue plan <id> archive               — any → archived
 /sapling:queue plan <id> update "<instruction>"
@@ -58,6 +59,21 @@ When a row's `team_name` is null (solo agent), suppress the `team=` key — show
 - Print all fields. For plans, print `body_markdown` verbatim (in a fenced block).
 - If `team_id` is set, also call `mcp__sapling__get_team({ id: team_id })` and print the team name, lead prompt header (first line), and role list. This makes it obvious what will run when the runner spawns this item.
 - For work with a `plan_id`, also fetch that plan's status and warn if `draft` / `archived` / `completed` — those should not be executed against.
+
+### `project <id>`
+
+- `mcp__sapling__get_project({ id })` for the project itself + rolled-up counts.
+- `mcp__sapling__list_work({ })` filtered client-side to rows where `project_id == id`. (There is no server-side project filter on `list_work` yet; client-side filtering is fine until volumes warrant it.)
+- `mcp__sapling__list_plans({ })` filtered client-side to rows where `project_id == id`.
+- Print, in order:
+  - Project header: title, status, app, `linear_url?`.
+  - Definition of Done verbatim (fenced).
+  - Rolled-up `work_counts` from `get_project`.
+  - **Scoping artifact** body if `scoping_artifact_id` is non-null (fetched via `get_artifact`), fenced.
+  - **DoD gaps** body if a `dod_gaps` artifact exists for the verifier work item, fenced.
+  - **Plans** under this project: one line per plan (`#<id>  <status>  <title>  service=<service_id?>`).
+  - **Work items** under this project, grouped by status, one line each: `#<id>  <type>/<status>  <title>  (plan=<plan_id?> service=<service_id?> verifier=<is_dod_verifier?>)`. Suppress `verifier=` when false.
+- Footer: action hints — `/sapling:project block <id>`, `/sapling:project cancel <id>`, etc.
 
 ### Plan actions
 

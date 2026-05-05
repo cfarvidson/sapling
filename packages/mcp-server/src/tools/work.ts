@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Db } from '../db.js';
 import { AppError, errorToToolResult, mapPgError } from '../errors.js';
+import { advanceProjectAfterWorkCompletion } from './projects.js';
 
 const WorkType = z.enum(['plan', 'code', 'review']);
 const WorkStatus = z.enum([
@@ -23,7 +24,7 @@ export function registerWork(server: McpServer, db: Db): void {
     'enqueue_work',
     {
       description:
-        'Add a typed task to the queue (plan / code / review). team_id resolution: explicit value > per-app default for (service.app_id, type) > global default for (NULL, type) > null (solo agent).',
+        'Add a typed task to the queue (plan / code / review). team_id resolution: explicit value > per-app default for (service.app_id, type) > global default for (NULL, type) > null (solo agent). project_id optionally links the item to a project so server-side hooks can advance the workflow on completion.',
       inputSchema: {
         type: WorkType,
         title: z.string().min(1),
@@ -34,6 +35,7 @@ export function registerWork(server: McpServer, db: Db): void {
         branch: z.string().optional(),
         pr_url: z.string().url().optional(),
         team_id: z.number().int().positive().optional(),
+        project_id: z.number().int().positive().optional(),
       },
     },
     async (input) => {
@@ -49,6 +51,25 @@ export function registerWork(server: McpServer, db: Db): void {
               new AppError('not_found', `service ${input.service_id} not found`),
             );
           appId = svc.rows[0].app_id;
+        }
+
+        if (input.project_id !== undefined) {
+          const p = await db.query<{ app_id: number }>(
+            `SELECT app_id FROM projects WHERE id = $1`,
+            [input.project_id],
+          );
+          if (p.rowCount === 0)
+            return errorToToolResult(
+              new AppError('not_found', `project ${input.project_id} not found`),
+            );
+          if (appId !== null && p.rows[0].app_id !== appId) {
+            return errorToToolResult(
+              new AppError(
+                'invalid_input',
+                `project ${input.project_id} belongs to app ${p.rows[0].app_id} but service belongs to app ${appId}`,
+              ),
+            );
+          }
         }
 
         let teamId: number | null = null;
@@ -89,8 +110,8 @@ export function registerWork(server: McpServer, db: Db): void {
 
         const { rows } = await db.query(
           `INSERT INTO work_items
-             (type, title, description_markdown, priority, service_id, plan_id, branch, pr_url, team_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+             (type, title, description_markdown, priority, service_id, plan_id, branch, pr_url, team_id, project_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
           [
             input.type,
             input.title,
@@ -101,6 +122,7 @@ export function registerWork(server: McpServer, db: Db): void {
             input.branch ?? null,
             input.pr_url ?? null,
             teamId,
+            input.project_id ?? null,
           ],
         );
         return ok(rows[0]);
@@ -231,6 +253,15 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
               id,
               artifact_id,
             ]);
+          }
+          if (work.project_id !== null && work.project_id !== undefined) {
+            await advanceProjectAfterWorkCompletion(client, work.project_id, {
+              id: work.id,
+              project_id: work.project_id,
+              plan_id: work.plan_id,
+              type: work.type,
+              is_dod_verifier: work.is_dod_verifier === true,
+            });
           }
           await client.query('COMMIT');
           return ok(work);
