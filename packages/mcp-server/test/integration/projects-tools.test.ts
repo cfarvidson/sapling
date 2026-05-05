@@ -661,3 +661,159 @@ describe('retry_project', () => {
     expect(body.error.code).toBe('conflict');
   });
 });
+
+describe('workflow driver — auto-enqueue triggers', () => {
+  let db: TestDb;
+  let client: TestClient;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+  });
+
+  async function setupProjectWithPlanAndCode(): Promise<{
+    projectId: number;
+    planId: number;
+    codeWorkIds: number[];
+  }> {
+    const appId = await seedApp(db, 'iris');
+    const svc = await seedService(db, appId, 'svc');
+    const r = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 'P',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+      service_ids: [svc],
+    })) as { project: { id: number }; plan_work_items: Array<{ id: number }> };
+    // Mark the per-service plan work item completed (without a real plan body needed).
+    await db.pool.query(`UPDATE work_items SET status='completed' WHERE id=$1`, [
+      r.plan_work_items[0].id,
+    ]);
+    // Create a real plan row and two code work items beneath it.
+    const plan = await db.pool.query<{ id: number }>(
+      `INSERT INTO plans(title, body_markdown, service_id, project_id, status)
+       VALUES ('p', 'b', $1, $2, 'active') RETURNING id`,
+      [svc, r.project.id],
+    );
+    const code1 = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 'c1',
+      description_markdown: 'd',
+      service_id: svc,
+      plan_id: plan.rows[0].id,
+      project_id: r.project.id,
+    })) as { id: number };
+    const code2 = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 'c2',
+      description_markdown: 'd',
+      service_id: svc,
+      plan_id: plan.rows[0].id,
+      project_id: r.project.id,
+    })) as { id: number };
+    return { projectId: r.project.id, planId: plan.rows[0].id, codeWorkIds: [code1.id, code2.id] };
+  }
+
+  it('enqueue_work accepts project_id and persists it', async () => {
+    const appId = await seedApp(db, 'iris');
+    void appId;
+    const r = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    })) as { project: { id: number } };
+    const w = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 'c',
+      description_markdown: 'd',
+      project_id: r.project.id,
+    })) as { id: number; project_id: number };
+    expect(w.project_id).toBe(r.project.id);
+  });
+
+  it('completing the last code work under a plan auto-enqueues a per-plan review', async () => {
+    const { projectId, planId, codeWorkIds } = await setupProjectWithPlanAndCode();
+    await client.call('complete_work', { id: codeWorkIds[0] });
+    let reviews = await db.pool.query(
+      `SELECT count(*)::int AS n FROM work_items WHERE plan_id=$1 AND type='review'`,
+      [planId],
+    );
+    expect(reviews.rows[0].n).toBe(0);
+    await client.call('complete_work', { id: codeWorkIds[1] });
+    reviews = await db.pool.query(
+      `SELECT type, project_id, plan_id FROM work_items WHERE plan_id=$1 AND type='review'`,
+      [planId],
+    );
+    expect(reviews.rowCount).toBe(1);
+    expect(reviews.rows[0].project_id).toBe(projectId);
+  });
+
+  it('completing the last non-verifier item auto-enqueues the DoD verifier', async () => {
+    const { projectId, planId, codeWorkIds } = await setupProjectWithPlanAndCode();
+    await client.call('complete_work', { id: codeWorkIds[0] });
+    await client.call('complete_work', { id: codeWorkIds[1] });
+    // Per-plan review now exists; complete it.
+    const review = await db.pool.query<{ id: number }>(
+      `SELECT id FROM work_items WHERE plan_id=$1 AND type='review' AND is_dod_verifier=false`,
+      [planId],
+    );
+    await client.call('complete_work', { id: review.rows[0].id });
+    const verifiers = await db.pool.query<{ id: number; type: string; is_dod_verifier: boolean }>(
+      `SELECT id, type, is_dod_verifier FROM work_items WHERE project_id=$1 AND is_dod_verifier=true`,
+      [projectId],
+    );
+    expect(verifiers.rowCount).toBe(1);
+    expect(verifiers.rows[0].type).toBe('review');
+  });
+
+  it('completing the DoD verifier flips the project to done', async () => {
+    const { projectId, planId, codeWorkIds } = await setupProjectWithPlanAndCode();
+    await client.call('complete_work', { id: codeWorkIds[0] });
+    await client.call('complete_work', { id: codeWorkIds[1] });
+    const review = await db.pool.query<{ id: number }>(
+      `SELECT id FROM work_items WHERE plan_id=$1 AND type='review' AND is_dod_verifier=false`,
+      [planId],
+    );
+    await client.call('complete_work', { id: review.rows[0].id });
+    const verifier = await db.pool.query<{ id: number }>(
+      `SELECT id FROM work_items WHERE project_id=$1 AND is_dod_verifier=true`,
+      [projectId],
+    );
+    await client.call('complete_work', { id: verifier.rows[0].id });
+    const proj = await db.pool.query<{ status: string }>(
+      `SELECT status FROM projects WHERE id=$1`,
+      [projectId],
+    );
+    expect(proj.rows[0].status).toBe('done');
+  });
+
+  it('triggers do not fire while project is blocked, and replay on unblock', async () => {
+    const { projectId, planId, codeWorkIds } = await setupProjectWithPlanAndCode();
+    await client.call('block_project', { id: projectId, reason: 'paused' });
+    await client.call('complete_work', { id: codeWorkIds[0] });
+    await client.call('complete_work', { id: codeWorkIds[1] });
+    let reviews = await db.pool.query(
+      `SELECT count(*)::int AS n FROM work_items WHERE plan_id=$1 AND type='review'`,
+      [planId],
+    );
+    expect(reviews.rows[0].n).toBe(0);
+    await client.call('unblock_project', { id: projectId });
+    reviews = await db.pool.query(
+      `SELECT count(*)::int AS n FROM work_items WHERE plan_id=$1 AND type='review'`,
+      [planId],
+    );
+    expect(reviews.rows[0].n).toBe(1);
+  });
+});

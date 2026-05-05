@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { PoolClient } from 'pg';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Db } from '../db.js';
 import { AppError, errorToToolResult, mapPgError } from '../errors.js';
@@ -489,8 +490,24 @@ export function registerProjects(server: McpServer, db: Db): void {
           [id, target],
         );
 
-        // Replay missed triggers — implementation lands in Task 11.
-        // (Intentional placeholder; the lifecycle tests in Task 12 will exercise it.)
+        // Replay any auto-enqueue triggers that were skipped while blocked.
+        const recent = await client.query<{
+          id: number;
+          project_id: number;
+          plan_id: number | null;
+          type: 'plan' | 'code' | 'review';
+          is_dod_verifier: boolean;
+        }>(
+          `SELECT id, project_id, plan_id, type, is_dod_verifier
+             FROM work_items
+            WHERE project_id = $1 AND status = 'completed'
+            ORDER BY completed_at DESC NULLS LAST, id DESC
+            LIMIT 1`,
+          [id],
+        );
+        if ((recent.rowCount ?? 0) > 0) {
+          await advanceProjectAfterWorkCompletion(client, id, recent.rows[0]);
+        }
 
         await client.query('COMMIT');
         return ok(upd.rows[0]);
@@ -561,4 +578,89 @@ export function registerProjects(server: McpServer, db: Db): void {
       }
     },
   );
+}
+
+export interface CompletedWork {
+  id: number;
+  project_id: number | null;
+  plan_id: number | null;
+  type: 'plan' | 'code' | 'review';
+  is_dod_verifier: boolean;
+}
+
+export async function advanceProjectAfterWorkCompletion(
+  client: PoolClient,
+  projectId: number,
+  completed: CompletedWork,
+): Promise<void> {
+  const proj = await client.query<{
+    id: number;
+    title: string;
+    status: string;
+    definition_of_done_md: string;
+  }>(`SELECT id, title, status, definition_of_done_md FROM projects WHERE id=$1 FOR UPDATE`, [
+    projectId,
+  ]);
+  if (proj.rowCount === 0) return;
+  const status = proj.rows[0].status;
+  if (status !== 'scoping' && status !== 'in_progress') return;
+
+  if (completed.is_dod_verifier) {
+    await client.query(`UPDATE projects SET status='done', updated_at=now() WHERE id=$1`, [
+      projectId,
+    ]);
+    return;
+  }
+
+  if (completed.plan_id !== null && completed.type === 'code') {
+    const remaining = await client.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM work_items
+         WHERE plan_id=$1 AND type='code' AND status <> 'completed'`,
+      [completed.plan_id],
+    );
+    const reviewExists = await client.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM work_items
+         WHERE plan_id=$1 AND type='review'`,
+      [completed.plan_id],
+    );
+    if (remaining.rows[0].n === 0 && reviewExists.rows[0].n === 0) {
+      await client.query(
+        `INSERT INTO work_items(type, title, description_markdown, plan_id, project_id)
+         VALUES ('review', $1, $2, $3, $4)`,
+        [
+          `Review plan ${completed.plan_id} for project ${projectId}`,
+          `Auto-enqueued review for plan ${completed.plan_id} under project ${projectId}.\n\n` +
+            `All code work items for that plan are completed. Review the diff(s) and either ` +
+            `approve, request changes, or comment per /sapling:work review semantics.`,
+          completed.plan_id,
+          projectId,
+        ],
+      );
+    }
+  }
+
+  const remainingNonVerifier = await client.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM work_items
+       WHERE project_id=$1 AND is_dod_verifier=false AND status <> 'completed'`,
+    [projectId],
+  );
+  const verifierExists = await client.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM work_items
+       WHERE project_id=$1 AND is_dod_verifier=true`,
+    [projectId],
+  );
+  if (remainingNonVerifier.rows[0].n === 0 && verifierExists.rows[0].n === 0) {
+    await client.query(
+      `INSERT INTO work_items(type, title, description_markdown, project_id, is_dod_verifier)
+       VALUES ('review', $1, $2, $3, true)`,
+      [
+        `Verify Definition of Done for project ${projectId}: ${proj.rows[0].title}`,
+        `All non-verifier work items are completed. Verify each criterion in the DoD against shipped reality (PRs, tests, code).\n\n` +
+          `Definition of Done:\n\n${proj.rows[0].definition_of_done_md}\n\n` +
+          `On success: complete_work normally → project flips to 'done'.\n` +
+          `On failure: attach a 'dod_gaps' artifact listing what is missing AND complete_work — the project will stay in_progress and a human can enqueue more work + retry_project.`,
+        projectId,
+      ],
+    );
+  }
 }
