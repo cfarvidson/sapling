@@ -23,6 +23,7 @@ describe('migrate', () => {
       'apps',
       'artifacts',
       'plans',
+      'projects',
       'runner_config',
       'services',
       'team_defaults',
