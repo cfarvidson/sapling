@@ -135,9 +135,109 @@ export function registerProjects(server: McpServer, db: Db): void {
     },
   );
 
-  // Stubs for the remaining eight tools — same shape as Task 2.
-  for (const name of [
+  server.registerTool(
     'complete_scoping',
+    {
+      description:
+        'Atomically transition a project from scoping to in_progress and fan out one plan work item per service. Validates each service belongs to the project app. Caller separately calls complete_work on the scoping work item.',
+      inputSchema: {
+        project_id: z.number().int().positive(),
+        service_ids: z.array(z.number().int().positive()),
+      },
+    },
+    async (input) => {
+      if (!input.service_ids || input.service_ids.length === 0) {
+        return errorToToolResult(
+          new AppError('invalid_input', 'service_ids must contain at least one entry'),
+        );
+      }
+
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        const projLookup = await client.query<{
+          id: number;
+          app_id: number;
+          status: string;
+          title: string;
+          description_md: string;
+          definition_of_done_md: string;
+        }>(
+          `SELECT id, app_id, status, title, description_md, definition_of_done_md FROM projects WHERE id = $1 FOR UPDATE`,
+          [input.project_id],
+        );
+        if (projLookup.rowCount === 0) {
+          await client.query('ROLLBACK');
+          return errorToToolResult(
+            new AppError('not_found', `project ${input.project_id} not found`),
+          );
+        }
+        const project = projLookup.rows[0];
+        if (project.status !== 'scoping') {
+          await client.query('ROLLBACK');
+          return errorToToolResult(
+            new AppError(
+              'conflict',
+              `project ${input.project_id} is in status ${project.status}; complete_scoping requires 'scoping'`,
+            ),
+          );
+        }
+
+        const services = await client.query<{ id: number; app_id: number; name: string }>(
+          `SELECT id, app_id, name FROM services WHERE id = ANY($1::int[])`,
+          [input.service_ids],
+        );
+        if (services.rowCount !== input.service_ids.length) {
+          await client.query('ROLLBACK');
+          return errorToToolResult(new AppError('not_found', 'one or more service_ids not found'));
+        }
+        const wrong = services.rows.find((s) => s.app_id !== project.app_id);
+        if (wrong) {
+          await client.query('ROLLBACK');
+          return errorToToolResult(
+            new AppError(
+              'invalid_input',
+              `service ${wrong.id} (${wrong.name}) does not belong to project ${input.project_id}'s app`,
+            ),
+          );
+        }
+
+        const planWorkItems = [];
+        for (const sid of input.service_ids) {
+          const w = await client.query(
+            `INSERT INTO work_items(type, title, description_markdown, service_id, project_id)
+             VALUES ('plan', $1, $2, $3, $4)
+             RETURNING *`,
+            [
+              `Plan service ${sid} for project ${project.id}: ${project.title}`,
+              `Per-service plan for project ${project.id} (service ${sid}).\n\n` +
+                `Description:\n\n${project.description_md}\n\n` +
+                `Definition of Done:\n\n${project.definition_of_done_md}\n\n` +
+                `Read the latest 'scoping' artifact on this project before planning.`,
+              sid,
+              project.id,
+            ],
+          );
+          planWorkItems.push(w.rows[0]);
+        }
+
+        const upd = await client.query(
+          `UPDATE projects SET status='in_progress', updated_at=now() WHERE id=$1 RETURNING *`,
+          [project.id],
+        );
+        await client.query('COMMIT');
+        return ok({ project: upd.rows[0], plan_work_items: planWorkItems });
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  // Stubs for the remaining seven tools — real implementations land in subsequent tasks.
+  for (const name of [
     'get_project',
     'list_projects',
     'update_project',

@@ -210,3 +210,101 @@ describe('create_project — fast path (service_ids supplied)', () => {
     expect(body.error.message).toMatch(/service .* does not belong to app/i);
   });
 });
+
+describe('complete_scoping', () => {
+  let db: TestDb;
+  let client: TestClient;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+  });
+
+  async function createScopingProject(): Promise<{
+    projectId: number;
+    appId: number;
+    services: number[];
+  }> {
+    const appId = await seedApp(db, 'iris');
+    const a = await seedService(db, appId, 'svc-a');
+    const b = await seedService(db, appId, 'svc-b');
+    const r = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 'X',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    })) as { project: { id: number } };
+    return { projectId: r.project.id, appId, services: [a, b] };
+  }
+
+  it('flips project to in_progress and fans out per-service plan work items', async () => {
+    const { projectId, services } = await createScopingProject();
+    const result = (await client.call('complete_scoping', {
+      project_id: projectId,
+      service_ids: services,
+    })) as {
+      project: { id: number; status: string };
+      plan_work_items: Array<{ id: number; service_id: number; type: string }>;
+    };
+    expect(result.project.status).toBe('in_progress');
+    expect(result.plan_work_items).toHaveLength(2);
+    expect(new Set(result.plan_work_items.map((w) => w.service_id))).toEqual(new Set(services));
+  });
+
+  it('rejects empty service_ids with invalid_input', async () => {
+    const { projectId } = await createScopingProject();
+    const raw = await client.callRaw('complete_scoping', {
+      project_id: projectId,
+      service_ids: [],
+    });
+    expect(raw.isError).toBe(true);
+    const body = JSON.parse(raw.content[0].text) as { error: { code: string } };
+    expect(body.error.code).toBe('invalid_input');
+  });
+
+  it('rejects services from a different app with invalid_input', async () => {
+    const { projectId } = await createScopingProject();
+    const otherApp = await seedApp(db, 'other');
+    const foreign = await seedService(db, otherApp, 'foreign');
+    const raw = await client.callRaw('complete_scoping', {
+      project_id: projectId,
+      service_ids: [foreign],
+    });
+    expect(raw.isError).toBe(true);
+    const body = JSON.parse(raw.content[0].text) as { error: { code: string } };
+    expect(body.error.code).toBe('invalid_input');
+  });
+
+  it('rejects projects not in scoping status with conflict', async () => {
+    const { projectId, services } = await createScopingProject();
+    await client.call('complete_scoping', { project_id: projectId, service_ids: services });
+    const raw = await client.callRaw('complete_scoping', {
+      project_id: projectId,
+      service_ids: services,
+    });
+    expect(raw.isError).toBe(true);
+    const body = JSON.parse(raw.content[0].text) as { error: { code: string } };
+    expect(body.error.code).toBe('conflict');
+  });
+
+  it('returns not_found for an unknown project_id', async () => {
+    const raw = await client.callRaw('complete_scoping', {
+      project_id: 999999,
+      service_ids: [1],
+    });
+    expect(raw.isError).toBe(true);
+    const body = JSON.parse(raw.content[0].text) as { error: { code: string } };
+    expect(body.error.code).toBe('not_found');
+  });
+});
