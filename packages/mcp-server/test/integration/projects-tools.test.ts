@@ -309,6 +309,60 @@ describe('complete_scoping', () => {
   });
 });
 
+describe('update_project', () => {
+  let db: TestDb;
+  let client: TestClient;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+  });
+
+  it('patches title, description, DoD, linear_url', async () => {
+    await seedApp(db, 'iris');
+    const r = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 'Old',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    })) as { project: { id: number } };
+    const updated = (await client.call('update_project', {
+      id: r.project.id,
+      title: 'New',
+      definition_of_done_md: 'NEW DOD',
+      linear_url: 'https://linear.app/x/issue/X-1',
+    })) as { id: number; title: string; definition_of_done_md: string; linear_url: string };
+    expect(updated.title).toBe('New');
+    expect(updated.definition_of_done_md).toBe('NEW DOD');
+    expect(updated.linear_url).toBe('https://linear.app/x/issue/X-1');
+  });
+
+  it('rejects empty body with invalid_input', async () => {
+    await seedApp(db, 'iris');
+    const r = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    })) as { project: { id: number } };
+    const raw = await client.callRaw('update_project', { id: r.project.id });
+    expect(raw.isError).toBe(true);
+    const body = JSON.parse(raw.content[0].text) as { error: { code: string } };
+    expect(body.error.code).toBe('invalid_input');
+  });
+});
+
 describe('get_project / list_projects', () => {
   let db: TestDb;
   let client: TestClient;

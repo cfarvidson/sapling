@@ -327,9 +327,51 @@ export function registerProjects(server: McpServer, db: Db): void {
     },
   );
 
-  // Stubs for the remaining five tools — real implementations land in subsequent tasks.
-  for (const name of [
+  server.registerTool(
     'update_project',
+    {
+      description:
+        'Patch a project. Allowed fields: title, description_md, definition_of_done_md, linear_url. status and app_id are immutable here — use the lifecycle tools.',
+      inputSchema: {
+        id: z.number().int().positive(),
+        title: z.string().min(1).optional(),
+        description_md: z.string().min(1).optional(),
+        definition_of_done_md: z.string().min(1).optional(),
+        linear_url: z.string().url().nullable().optional(),
+      },
+    },
+    async ({ id, ...patch }) => {
+      const fields = (Object.keys(patch) as Array<keyof typeof patch>).filter(
+        (k) => patch[k] !== undefined,
+      );
+      if (fields.length === 0)
+        return errorToToolResult(new AppError('invalid_input', 'no fields to update'));
+
+      const sets: string[] = [];
+      const values: unknown[] = [];
+      let i = 1;
+      for (const f of fields) {
+        sets.push(`${f} = $${i++}`);
+        values.push(patch[f]);
+      }
+      sets.push(`updated_at = now()`);
+      values.push(id);
+      try {
+        const { rows } = await db.query(
+          `UPDATE projects SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
+          values,
+        );
+        if (rows.length === 0)
+          return errorToToolResult(new AppError('not_found', `project ${id} not found`));
+        return ok(rows[0]);
+      } catch (err) {
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      }
+    },
+  );
+
+  // Stubs for the remaining four tools — real implementations land in subsequent tasks.
+  for (const name of [
     'cancel_project',
     'block_project',
     'unblock_project',
