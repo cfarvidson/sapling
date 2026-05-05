@@ -423,15 +423,96 @@ export function registerProjects(server: McpServer, db: Db): void {
     },
   );
 
-  // Stubs for the remaining three tools — real implementations land in subsequent tasks.
-  for (const name of ['block_project', 'unblock_project', 'retry_project'] as const) {
-    server.registerTool(
-      name,
-      {
-        description: `Stub for ${name}; real implementation lands in a subsequent task.`,
-        inputSchema: { _stub: z.unknown().optional() },
+  server.registerTool(
+    'block_project',
+    {
+      description:
+        'Block a project on an external dependency from scoping/in_progress. Does not cascade to children — they continue. Reason is required.',
+      inputSchema: {
+        id: z.number().int().positive(),
+        reason: z.string().min(1),
       },
-      async () => NotImplemented(),
-    );
-  }
+    },
+    async ({ id, reason }) => {
+      const { rows } = await db.query(
+        `UPDATE projects
+            SET status='blocked',
+                failure_reason=$2,
+                updated_at=now()
+          WHERE id=$1 AND status IN ('scoping','in_progress')
+         RETURNING *`,
+        [id, reason],
+      );
+      if (rows.length === 0) {
+        const exists = await db.query(`SELECT id FROM projects WHERE id=$1`, [id]);
+        if (exists.rowCount === 0)
+          return errorToToolResult(new AppError('not_found', `project ${id} not found`));
+        return errorToToolResult(new AppError('conflict', `project ${id} is in a terminal state`));
+      }
+      return ok(rows[0]);
+    },
+  );
+
+  server.registerTool(
+    'unblock_project',
+    {
+      description:
+        'Unblock a project. Recomputes target state from children: scoping if a scoping plan-type work item is still pending/claimed, else in_progress. Replays auto-enqueue triggers that fired while blocked.',
+      inputSchema: { id: z.number().int().positive() },
+    },
+    async ({ id }) => {
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        const proj = await client.query<{ id: number; status: string }>(
+          `SELECT id, status FROM projects WHERE id=$1 FOR UPDATE`,
+          [id],
+        );
+        if (proj.rowCount === 0) {
+          await client.query('ROLLBACK');
+          return errorToToolResult(new AppError('not_found', `project ${id} not found`));
+        }
+        if (proj.rows[0].status !== 'blocked') {
+          await client.query('ROLLBACK');
+          return errorToToolResult(new AppError('conflict', `project ${id} is not blocked`));
+        }
+
+        const scopingInFlight = await client.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM work_items
+             WHERE project_id = $1 AND type = 'plan'
+               AND title LIKE 'Scope project%'
+               AND status IN ('pending','claimed','awaiting_input','blocked')`,
+          [id],
+        );
+        const target = scopingInFlight.rows[0].n > 0 ? 'scoping' : 'in_progress';
+        const upd = await client.query(
+          `UPDATE projects
+              SET status=$2, failure_reason=NULL, updated_at=now()
+            WHERE id=$1 RETURNING *`,
+          [id, target],
+        );
+
+        // Replay missed triggers — implementation lands in Task 11.
+        // (Intentional placeholder; the lifecycle tests in Task 12 will exercise it.)
+
+        await client.query('COMMIT');
+        return ok(upd.rows[0]);
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  // Stub for retry_project — real implementation lands in Task 10.
+  server.registerTool(
+    'retry_project',
+    {
+      description: `Stub for retry_project; real implementation lands in a subsequent task.`,
+      inputSchema: { _stub: z.unknown().optional() },
+    },
+    async () => NotImplemented(),
+  );
 }

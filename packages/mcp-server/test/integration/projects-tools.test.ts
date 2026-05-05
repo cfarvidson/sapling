@@ -513,3 +513,91 @@ describe('cancel_project', () => {
     expect(body.error.code).toBe('not_found');
   });
 });
+
+describe('block_project / unblock_project', () => {
+  let db: TestDb;
+  let client: TestClient;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+  });
+
+  it('blocks a scoping project and stores the reason', async () => {
+    await seedApp(db, 'iris');
+    const r = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    })) as { project: { id: number } };
+    const out = (await client.call('block_project', {
+      id: r.project.id,
+      reason: 'waiting on infra',
+    })) as { status: string; failure_reason: string };
+    expect(out.status).toBe('blocked');
+    expect(out.failure_reason).toBe('waiting on infra');
+  });
+
+  it('rejects block from terminal done/cancelled with conflict', async () => {
+    await seedApp(db, 'iris');
+    const r = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    })) as { project: { id: number } };
+    await client.call('cancel_project', { id: r.project.id });
+    const raw = await client.callRaw('block_project', {
+      id: r.project.id,
+      reason: 'x',
+    });
+    expect(raw.isError).toBe(true);
+    const body = JSON.parse(raw.content[0].text) as { error: { code: string } };
+    expect(body.error.code).toBe('conflict');
+  });
+
+  it('unblock recomputes status: scoping if scoping work in flight, else in_progress', async () => {
+    const appId = await seedApp(db, 'iris');
+    void appId;
+
+    // Case A: scoping work item still pending → unblock returns to scoping.
+    const a = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 'A',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    })) as { project: { id: number } };
+    await client.call('block_project', { id: a.project.id, reason: 'r' });
+    const aOut = (await client.call('unblock_project', { id: a.project.id })) as {
+      status: string;
+    };
+    expect(aOut.status).toBe('scoping');
+
+    // Case B: project was in_progress before block → returns to in_progress.
+    const svc = await seedService(db, appId, 'svc');
+    const b = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 'B',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+      service_ids: [svc],
+    })) as { project: { id: number } };
+    await client.call('block_project', { id: b.project.id, reason: 'r' });
+    const bOut = (await client.call('unblock_project', { id: b.project.id })) as {
+      status: string;
+    };
+    expect(bOut.status).toBe('in_progress');
+  });
+});
