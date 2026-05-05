@@ -132,6 +132,19 @@ Discoverability is **pull-based**: there are no outbound transports (no Slack we
 
 Submitting answers calls `provide_human_input`, which writes an `answers` artifact and flips status back to `pending`. The runner re-claims the item on the next tick; the next agent reads both artifacts (latest `pending_questions` + newer `answers`) before continuing planning. `/sapling:status` shows the `awaiting_input` count alongside the others, and `/sapling:queue work <id> retry` clears a paused item if the questions turn out to be wrong.
 
+### Chaining work (`review` → `fix`)
+
+When a code task should run only after a review finishes, enqueue it with `depends_on_work_id` instead of leaning on `block_work` / `unblock_work`:
+
+```text
+/sapling:enqueue review look at PR foo
+# → Queued review task #83
+/sapling:enqueue code address review findings after #83
+# → Queued code task #84 (waiting on #83)
+```
+
+`claim_next_work` joins on the upstream item and skips dependents whose upstream is not `completed`. There is no new status — the dependent simply stays `pending` and unclaimable. When `#83` flips to `completed`, the next `/sapling:work` tick picks up `#84` automatically. Failed or cancelled upstreams keep the dependent unclaimable; cancel the dependent (or change the upstream's status) to clear it.
+
 If you want proactive nudging, pair with `/loop`:
 
 ```text

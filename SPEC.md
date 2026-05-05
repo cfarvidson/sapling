@@ -147,6 +147,7 @@ Authoritative source: `packages/mcp-server/src/schema/*.sql`. The migrations app
 | `005_awaiting_input_status.sql` | Adds `'awaiting_input'` to the `work_status` enum.                                                                               |
 | `006_teams.sql`                 | Creates `teams`, `team_roles`, `team_defaults`; adds `work_items.team_id`.                                                       |
 | `007_projects.sql`              | Creates `projects`, `project_status` enum, `project_id` FKs on `plans` and `work_items`, `is_dod_verifier` flag on `work_items`. |
+| `008_depends_on_work_id.sql`    | Adds `work_items.depends_on_work_id` (self-FK, `ON DELETE SET NULL`) and a partial index.                                        |
 
 ### Tables
 
@@ -184,6 +185,7 @@ plan_id              int  → plans       ON DELETE SET NULL
 team_id              int  → teams       ON DELETE SET NULL  (006)
 project_id           int  → projects   ON DELETE SET NULL   (007)
 is_dod_verifier      boolean default false                   (007)
+depends_on_work_id   int  → work_items  ON DELETE SET NULL  (008)
 branch               text
 pr_url               text
 claimed_at           timestamptz
@@ -203,6 +205,7 @@ updated_at           timestamptz default now()
 - `work_status_idx` — broad status filter.
 - `work_claim_expiry_idx` — partial index `(claim_expires_at) WHERE status = 'claimed'`. Used by `reap_stuck_claims`.
 - `work_team_idx` — partial index `(team_id) WHERE team_id IS NOT NULL`.
+- `work_depends_on_idx` — partial index `(depends_on_work_id) WHERE depends_on_work_id IS NOT NULL`. Keeps the dep-status filter in `claim_next_work` cheap.
 - `plans_service_idx`, `plans_status_idx`, `artifacts_work_idx`, `artifacts_plan_idx`.
 - `plans_project_idx` — partial index on `plans(project_id)` where `project_id IS NOT NULL`.
 - `work_project_idx` — partial index on `work_items(project_id)` where `project_id IS NOT NULL`.
@@ -251,19 +254,19 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 
 ### Work queue (`tools/work.ts`) — 11 tools
 
-| Tool                                                                                                                         | Purpose                                                                                                                                                                                                                                                                   |
-| ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enqueue_work(type, title, description_markdown, priority?, service_id?, plan_id?, branch?, pr_url?, team_id?, project_id?)` | Add a task. Resolves `team_id` from defaults at insert time (see [§ Teams](#10-teams)).                                                                                                                                                                                   |
-| `claim_next_work(claimed_by, types?, service_id?, app_id?, app_name?)`                                                       | **Atomic.** `FOR UPDATE SKIP LOCKED`. Skips items with future `next_retry_at` or `attempt_count >= max_claim_attempts`. Returns next pending item or `null`. Sets `status='claimed'`, `claimed_at`, `claimed_by`, `claim_expires_at`, and **increments `attempt_count`**. |
-| `get_work(id)`                                                                                                               | Fetch one.                                                                                                                                                                                                                                                                |
-| `list_work(status?, type?, service_id?, plan_id?)`                                                                           | Filtered list. Joins `teams` to surface `team_name`.                                                                                                                                                                                                                      |
-| `complete_work(id, summary_markdown?, artifact_id?)`                                                                         | Mark `completed`. Optional summary stored as artifact, or link an existing artifact.                                                                                                                                                                                      |
-| `fail_work(id, reason)`                                                                                                      | Set `failed`. Failed items are not auto-retried.                                                                                                                                                                                                                          |
-| `cancel_work(id, reason?)`                                                                                                   | Soft delete equivalent.                                                                                                                                                                                                                                                   |
-| `block_work(id, reason)`                                                                                                     | Set `blocked` from `pending` / `claimed` / `blocked` / `failed`. Reason stored in `failure_reason` (terminal `completed` / `cancelled` items rejected with `conflict`).                                                                                                   |
-| `unblock_work(id)`                                                                                                           | `blocked → pending` only.                                                                                                                                                                                                                                                 |
-| `retry_work(id, after_ms?)`                                                                                                  | Re-queue from `failed` / `blocked` / `claimed` / `awaiting_input` to `pending`. Optional `after_ms` schedules `next_retry_at`. **Does not mutate `attempt_count`** — explicit retries are clean retries.                                                                  |
-| `reap_stuck_claims(now?)`                                                                                                    | Sweep `claimed` items past `claim_expires_at`: → `failed` if `attempt_count >= max_claim_attempts`, else → `pending`. Does not bump `attempt_count` (claim already did). Called by the runner each tick.                                                                  |
+| Tool                                                                                                                                              | Purpose                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `enqueue_work(type, title, description_markdown, priority?, service_id?, plan_id?, branch?, pr_url?, team_id?, project_id?, depends_on_work_id?)` | Add a task. Resolves `team_id` from defaults at insert time (see [§ Teams](#10-teams)). Optional `depends_on_work_id` chains the new item behind an upstream item — `claim_next_work` skips it until the upstream is `completed`.                                                                                              |
+| `claim_next_work(claimed_by, types?, service_id?, app_id?, app_name?)`                                                                            | **Atomic.** `FOR UPDATE SKIP LOCKED`. Skips items with future `next_retry_at`, items past the attempt cap, and items whose `depends_on_work_id` upstream is not `completed`. Returns next pending item or `null`. Sets `status='claimed'`, `claimed_at`, `claimed_by`, `claim_expires_at`, and **increments `attempt_count`**. |
+| `get_work(id)`                                                                                                                                    | Fetch one.                                                                                                                                                                                                                                                                                                                     |
+| `list_work(status?, type?, service_id?, plan_id?, app_id?, app_name?, depends_on_work_id?)`                                                       | Filtered list. Joins `teams` to surface `team_name`. Filter by `depends_on_work_id` to find dependents of an upstream item.                                                                                                                                                                                                    |
+| `complete_work(id, summary_markdown?, artifact_id?)`                                                                                              | Mark `completed`. Optional summary stored as artifact, or link an existing artifact.                                                                                                                                                                                                                                           |
+| `fail_work(id, reason)`                                                                                                                           | Set `failed`. Failed items are not auto-retried.                                                                                                                                                                                                                                                                               |
+| `cancel_work(id, reason?)`                                                                                                                        | Soft delete equivalent.                                                                                                                                                                                                                                                                                                        |
+| `block_work(id, reason)`                                                                                                                          | Set `blocked` from `pending` / `claimed` / `blocked` / `failed`. Reason stored in `failure_reason` (terminal `completed` / `cancelled` items rejected with `conflict`).                                                                                                                                                        |
+| `unblock_work(id)`                                                                                                                                | `blocked → pending` only.                                                                                                                                                                                                                                                                                                      |
+| `retry_work(id, after_ms?)`                                                                                                                       | Re-queue from `failed` / `blocked` / `claimed` / `awaiting_input` to `pending`. Optional `after_ms` schedules `next_retry_at`. **Does not mutate `attempt_count`** — explicit retries are clean retries.                                                                                                                       |
+| `reap_stuck_claims(now?)`                                                                                                                         | Sweep `claimed` items past `claim_expires_at`: → `failed` if `attempt_count >= max_claim_attempts`, else → `pending`. Does not bump `attempt_count` (claim already did). Called by the runner each tick.                                                                                                                       |
 
 ### Artifacts (`tools/artifacts.ts`) — 3 tools
 
@@ -350,7 +353,7 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 
 ### Claim atomicity
 
-`claim_next_work` reads `runner_config` (for `max_claim_attempts` and `claim_ttl_ms`) and updates the row in one statement. Filters out items past their `next_retry_at`, items past the attempt cap, and rows locked by a concurrent claimer (`SKIP LOCKED`).
+`claim_next_work` reads `runner_config` (for `max_claim_attempts` and `claim_ttl_ms`) and updates the row in one statement. Filters out items past their `next_retry_at`, items past the attempt cap, items whose upstream dep is not yet `completed`, and rows locked by a concurrent claimer (`SKIP LOCKED`).
 
 ```sql
 WITH cfg AS (
@@ -359,12 +362,14 @@ WITH cfg AS (
 next AS (
   SELECT w.id FROM work_items w
    LEFT JOIN services s ON s.id = w.service_id
+   LEFT JOIN work_items dep ON dep.id = w.depends_on_work_id
    WHERE w.status = 'pending'
      AND ($1::work_type[] IS NULL OR w.type = ANY($1))
      AND ($2::int IS NULL OR w.service_id = $2)
      AND ($3::int IS NULL OR s.app_id = $3)
      AND (w.next_retry_at IS NULL OR w.next_retry_at <= now())
      AND w.attempt_count < (SELECT max_claim_attempts FROM cfg)
+     AND (w.depends_on_work_id IS NULL OR dep.status = 'completed')
    ORDER BY w.priority DESC, w.created_at ASC
    FOR UPDATE OF w SKIP LOCKED
    LIMIT 1
@@ -435,6 +440,16 @@ scoping ── complete_scoping ────────────────
    block_project   ──> blocked  ── unblock_project ──> (recomputed prior state)
    cancel_project  ──> cancelled  (cascades cancel_work to non-terminal children)
 ```
+
+### Dependencies (`depends_on_work_id`)
+
+`enqueue_work` accepts an optional `depends_on_work_id` that pins the new item behind an upstream work item. The model is intentionally minimal:
+
+- A single nullable self-FK column on `work_items` (`ON DELETE SET NULL`). No new status, no triggers, no event bus.
+- `claim_next_work` joins `work_items dep ON dep.id = w.depends_on_work_id` and gates eligibility on `dep.status = 'completed'`. Items whose dep is `pending` / `claimed` / `awaiting_input` / `blocked` simply stay unclaimable until the upstream flips to `completed`. Items whose dep is `failed` / `cancelled` likewise stay unclaimable — the operator can `cancel_work` the dependent or change the upstream's status.
+- Deleting the upstream nulls out `depends_on_work_id` and unblocks the dependent (mirroring the FK convention: deleting history must not strand work).
+- Validation at `enqueue_work` time: the upstream must exist, and if both items are scoped to apps, the apps must match. Self-reference and cycles are unreachable on insert (the new row's id does not exist yet) so no extra check is needed.
+- `block_work` / `unblock_work` are unchanged. Use `block_work` for external dependencies that aren't a Sapling work item; use `depends_on_work_id` for the natural review→fix chain inside Sapling.
 
 ## 9. Human-in-the-loop
 

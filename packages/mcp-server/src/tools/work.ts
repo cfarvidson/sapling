@@ -24,7 +24,7 @@ export function registerWork(server: McpServer, db: Db): void {
     'enqueue_work',
     {
       description:
-        'Add a typed task to the queue (plan / code / review). team_id resolution: explicit value > per-app default for (service.app_id, type) > global default for (NULL, type) > null (solo agent). project_id optionally links the item to a project so server-side hooks can advance the workflow on completion.',
+        'Add a typed task to the queue (plan / code / review). team_id resolution: explicit value > per-app default for (service.app_id, type) > global default for (NULL, type) > null (solo agent). project_id optionally links the item to a project so server-side hooks can advance the workflow on completion. Optional depends_on_work_id chains this item behind an upstream work item; claim_next_work skips it until that upstream is `completed`.',
       inputSchema: {
         type: WorkType,
         title: z.string().min(1),
@@ -36,6 +36,7 @@ export function registerWork(server: McpServer, db: Db): void {
         pr_url: z.string().url().optional(),
         team_id: z.number().int().positive().optional(),
         project_id: z.number().int().positive().optional(),
+        depends_on_work_id: z.number().int().positive().optional(),
       },
     },
     async (input) => {
@@ -67,6 +68,30 @@ export function registerWork(server: McpServer, db: Db): void {
               new AppError(
                 'invalid_input',
                 `project ${input.project_id} belongs to app ${p.rows[0].app_id} but service belongs to app ${appId}`,
+              ),
+            );
+          }
+        }
+
+        if (input.depends_on_work_id !== undefined) {
+          const dep = await db.query<{ id: number; service_app_id: number | null }>(
+            `SELECT w.id, s.app_id AS service_app_id
+               FROM work_items w
+               LEFT JOIN services s ON s.id = w.service_id
+              WHERE w.id = $1`,
+            [input.depends_on_work_id],
+          );
+          if (dep.rowCount === 0) {
+            return errorToToolResult(
+              new AppError('not_found', `depends_on_work_id ${input.depends_on_work_id} not found`),
+            );
+          }
+          const depAppId = dep.rows[0].service_app_id;
+          if (depAppId !== null && appId !== null && depAppId !== appId) {
+            return errorToToolResult(
+              new AppError(
+                'invalid_input',
+                `depends_on_work_id ${input.depends_on_work_id} belongs to app ${depAppId} but this item belongs to app ${appId}`,
               ),
             );
           }
@@ -110,8 +135,9 @@ export function registerWork(server: McpServer, db: Db): void {
 
         const { rows } = await db.query(
           `INSERT INTO work_items
-             (type, title, description_markdown, priority, service_id, plan_id, branch, pr_url, team_id, project_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+             (type, title, description_markdown, priority, service_id, plan_id,
+              branch, pr_url, team_id, project_id, depends_on_work_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
           [
             input.type,
             input.title,
@@ -123,6 +149,7 @@ export function registerWork(server: McpServer, db: Db): void {
             input.pr_url ?? null,
             teamId,
             input.project_id ?? null,
+            input.depends_on_work_id ?? null,
           ],
         );
         return ok(rows[0]);
@@ -150,7 +177,7 @@ export function registerWork(server: McpServer, db: Db): void {
     'list_work',
     {
       description:
-        'List work items with optional filters. Each row includes app_id, app_name, and team_name (NULL if no team assigned).',
+        'List work items with optional filters. Each row includes app_id, app_name, depends_on_work_id, and team_name (NULL if no team assigned). Filter by depends_on_work_id to find dependents of a given upstream item.',
       inputSchema: {
         status: WorkStatus.optional(),
         type: WorkType.optional(),
@@ -158,6 +185,7 @@ export function registerWork(server: McpServer, db: Db): void {
         plan_id: z.number().int().positive().optional(),
         app_id: z.number().int().positive().optional(),
         app_name: z.string().min(1).optional(),
+        depends_on_work_id: z.number().int().positive().optional(),
       },
     },
     async (filters) => {
@@ -179,6 +207,7 @@ export function registerWork(server: McpServer, db: Db): void {
         'type',
         'service_id',
         'plan_id',
+        'depends_on_work_id',
       ];
       for (const k of directColumns) {
         const v = filters[k];
@@ -475,7 +504,7 @@ export function registerWorkClaim(server: McpServer, db: Db): void {
     'claim_next_work',
     {
       description:
-        'Atomically claim the next pending work item. Returns null if none. Use app_id or app_name to scope the claim to one app (joins through services).',
+        'Atomically claim the next pending work item. Returns null if none. Use app_id or app_name to scope the claim to one app (joins through services). Items with depends_on_work_id are skipped until the upstream item is `completed`.',
       inputSchema: {
         claimed_by: z.string().min(1),
         types: WorkTypeArr.optional(),
@@ -503,12 +532,14 @@ export function registerWorkClaim(server: McpServer, db: Db): void {
          next AS (
            SELECT w.id FROM work_items w
             LEFT JOIN services s ON s.id = w.service_id
+            LEFT JOIN work_items dep ON dep.id = w.depends_on_work_id
             WHERE w.status = 'pending'
               AND ($1::work_type[] IS NULL OR w.type = ANY($1))
               AND ($2::int IS NULL OR w.service_id = $2)
               AND ($3::int IS NULL OR s.app_id = $3)
               AND (w.next_retry_at IS NULL OR w.next_retry_at <= now())
               AND w.attempt_count < (SELECT max_claim_attempts FROM cfg)
+              AND (w.depends_on_work_id IS NULL OR dep.status = 'completed')
             ORDER BY w.priority DESC, w.created_at ASC
             FOR UPDATE OF w SKIP LOCKED
             LIMIT 1
