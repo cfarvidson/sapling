@@ -601,3 +601,63 @@ describe('block_project / unblock_project', () => {
     expect(bOut.status).toBe('in_progress');
   });
 });
+
+describe('retry_project', () => {
+  let db: TestDb;
+  let client: TestClient;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+  });
+
+  it('flips a done project back to in_progress and retries the existing DoD verifier', async () => {
+    await seedApp(db, 'iris');
+    const r = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    })) as { project: { id: number } };
+
+    // Manually fabricate the "done + verifier exists" state so the tool can be tested in isolation.
+    await db.pool.query(
+      `INSERT INTO work_items(type, title, description_markdown, project_id, is_dod_verifier, status)
+       VALUES ('review', 'verify', 'd', $1, true, 'completed')`,
+      [r.project.id],
+    );
+    await db.pool.query(`UPDATE projects SET status='done' WHERE id=$1`, [r.project.id]);
+
+    const out = (await client.call('retry_project', { id: r.project.id })) as {
+      project: { status: string };
+      verifier: { id: number; status: string };
+    };
+    expect(out.project.status).toBe('in_progress');
+    expect(out.verifier.status).toBe('pending');
+  });
+
+  it('returns conflict when project has no DoD verifier yet', async () => {
+    await seedApp(db, 'iris');
+    const r = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    })) as { project: { id: number } };
+    const raw = await client.callRaw('retry_project', { id: r.project.id });
+    expect(raw.isError).toBe(true);
+    const body = JSON.parse(raw.content[0].text) as { error: { code: string } };
+    expect(body.error.code).toBe('conflict');
+  });
+});

@@ -7,9 +7,6 @@ function ok(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
 }
 
-const NotImplemented = () =>
-  errorToToolResult(new AppError('internal', 'project tool not yet implemented'));
-
 export function registerProjects(server: McpServer, db: Db): void {
   server.registerTool(
     'create_project',
@@ -506,13 +503,62 @@ export function registerProjects(server: McpServer, db: Db): void {
     },
   );
 
-  // Stub for retry_project — real implementation lands in Task 10.
   server.registerTool(
     'retry_project',
     {
-      description: `Stub for retry_project; real implementation lands in a subsequent task.`,
-      inputSchema: { _stub: z.unknown().optional() },
+      description:
+        'Re-open a project that hit done but on inspection is not actually done. Sets status back to in_progress and retries the existing DoD verifier work item.',
+      inputSchema: { id: z.number().int().positive() },
     },
-    async () => NotImplemented(),
+    async ({ id }) => {
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        const proj = await client.query<{ id: number; status: string }>(
+          `SELECT id, status FROM projects WHERE id=$1 FOR UPDATE`,
+          [id],
+        );
+        if (proj.rowCount === 0) {
+          await client.query('ROLLBACK');
+          return errorToToolResult(new AppError('not_found', `project ${id} not found`));
+        }
+        const verifier = await client.query<{ id: number; status: string }>(
+          `SELECT id, status FROM work_items
+            WHERE project_id=$1 AND is_dod_verifier=true
+            ORDER BY id DESC LIMIT 1
+            FOR UPDATE`,
+          [id],
+        );
+        if (verifier.rowCount === 0) {
+          await client.query('ROLLBACK');
+          return errorToToolResult(
+            new AppError('conflict', `project ${id} has no DoD verifier to retry`),
+          );
+        }
+        const updProj = await client.query(
+          `UPDATE projects SET status='in_progress', updated_at=now() WHERE id=$1 RETURNING *`,
+          [id],
+        );
+        const updVerifier = await client.query(
+          `UPDATE work_items
+              SET status='pending',
+                  claimed_at=NULL,
+                  claimed_by=NULL,
+                  claim_expires_at=NULL,
+                  failure_reason=NULL,
+                  next_retry_at=NULL,
+                  updated_at=now()
+            WHERE id=$1 RETURNING *`,
+          [verifier.rows[0].id],
+        );
+        await client.query('COMMIT');
+        return ok({ project: updProj.rows[0], verifier: updVerifier.rows[0] });
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      } finally {
+        client.release();
+      }
+    },
   );
 }
