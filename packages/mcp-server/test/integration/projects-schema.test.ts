@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../../src/migrate.js';
 import { startTestDb, type TestDb } from '../helpers/pg.js';
 
@@ -11,6 +11,10 @@ describe('projects schema (migration 007)', () => {
   });
   afterAll(async () => {
     await db.stop();
+  });
+
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
   });
 
   it('creates the projects table with the expected columns', async () => {
