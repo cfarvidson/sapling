@@ -47,7 +47,7 @@ describe('runner_config tools', () => {
     };
     expect(cfg.id).toBe(1);
     expect(cfg.agent_command).toBe('claude --dangerously-skip-permissions -p "/sapling:work"');
-    expect(cfg.max_concurrent).toBe(1);
+    expect(cfg.max_concurrent).toBe(2);
     expect(cfg.poll_interval_ms).toBe(30000);
     expect(cfg.claim_ttl_ms).toBe(7200000);
     expect(cfg.max_claim_attempts).toBe(5);

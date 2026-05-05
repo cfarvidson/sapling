@@ -83,6 +83,7 @@ describe('runner loop tick', () => {
   }
 
   it('spawns one agent per tick when max_concurrent=1 and running drains between ticks', async () => {
+    await db.pool.query(`UPDATE runner_config SET max_concurrent = 1 WHERE id = 1`);
     await enqueue(3);
     const stub = makeStubSpawn();
     const running = new Set<SpawnedAgent>();
