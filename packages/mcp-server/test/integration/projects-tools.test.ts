@@ -438,3 +438,78 @@ describe('get_project / list_projects', () => {
     expect(filtered[0].status).toBe('scoping');
   });
 });
+
+describe('cancel_project', () => {
+  let db: TestDb;
+  let client: TestClient;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    await runMigrations(db.pool);
+  });
+  afterAll(async () => {
+    await client?.close();
+    await db.stop();
+  });
+  beforeEach(async () => {
+    await db.pool.query('TRUNCATE apps RESTART IDENTITY CASCADE');
+    await client?.close();
+    const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
+    registerAllTools(server, db.pool);
+    client = await connectInMemory(server);
+  });
+
+  it('cascades cancel to all non-terminal child work items', async () => {
+    const appId = await seedApp(db, 'iris');
+    const a = await seedService(db, appId, 'svc-a');
+    const b = await seedService(db, appId, 'svc-b');
+    const r = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 'X',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+      service_ids: [a, b],
+    })) as { project: { id: number }; plan_work_items: Array<{ id: number }> };
+
+    // Mark one of the children completed; it must not be re-cancelled.
+    await db.pool.query(`UPDATE work_items SET status='completed' WHERE id=$1`, [
+      r.plan_work_items[0].id,
+    ]);
+
+    const out = (await client.call('cancel_project', {
+      id: r.project.id,
+      reason: 'changed direction',
+    })) as { id: number; status: string; failure_reason: string };
+    expect(out.status).toBe('cancelled');
+    expect(out.failure_reason).toBe('changed direction');
+
+    const rows = await db.pool.query<{ id: number; status: string }>(
+      `SELECT id, status FROM work_items WHERE project_id = $1 ORDER BY id`,
+      [r.project.id],
+    );
+    expect(rows.rows[0].status).toBe('completed'); // untouched terminal
+    expect(rows.rows[1].status).toBe('cancelled');
+  });
+
+  it('is idempotent on already-cancelled', async () => {
+    await seedApp(db, 'iris');
+    const r = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+    })) as { project: { id: number } };
+    await client.call('cancel_project', { id: r.project.id });
+    const out = (await client.call('cancel_project', { id: r.project.id })) as {
+      status: string;
+    };
+    expect(out.status).toBe('cancelled');
+  });
+
+  it('returns not_found for unknown id', async () => {
+    const raw = await client.callRaw('cancel_project', { id: 999999 });
+    expect(raw.isError).toBe(true);
+    const body = JSON.parse(raw.content[0].text) as { error: { code: string } };
+    expect(body.error.code).toBe('not_found');
+  });
+});

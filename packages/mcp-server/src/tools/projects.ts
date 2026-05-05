@@ -370,13 +370,61 @@ export function registerProjects(server: McpServer, db: Db): void {
     },
   );
 
-  // Stubs for the remaining four tools — real implementations land in subsequent tasks.
-  for (const name of [
+  server.registerTool(
     'cancel_project',
-    'block_project',
-    'unblock_project',
-    'retry_project',
-  ] as const) {
+    {
+      description:
+        'Cancel a project. Cascades cancel_work to all non-terminal child work items in the same transaction. Idempotent on already-cancelled.',
+      inputSchema: {
+        id: z.number().int().positive(),
+        reason: z.string().optional(),
+      },
+    },
+    async ({ id, reason }) => {
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        const proj = await client.query<{ id: number; status: string }>(
+          `SELECT id, status FROM projects WHERE id = $1 FOR UPDATE`,
+          [id],
+        );
+        if (proj.rowCount === 0) {
+          await client.query('ROLLBACK');
+          return errorToToolResult(new AppError('not_found', `project ${id} not found`));
+        }
+        await client.query(
+          `UPDATE work_items
+              SET status='cancelled',
+                  failure_reason=COALESCE($2, failure_reason),
+                  claim_expires_at=NULL,
+                  next_retry_at=NULL,
+                  updated_at=now()
+            WHERE project_id = $1
+              AND status IN ('pending','claimed','blocked','awaiting_input')`,
+          [id, reason ?? null],
+        );
+        const out = await client.query(
+          `UPDATE projects
+              SET status='cancelled',
+                  failure_reason=COALESCE($2, failure_reason),
+                  updated_at=now()
+            WHERE id=$1
+          RETURNING *`,
+          [id, reason ?? null],
+        );
+        await client.query('COMMIT');
+        return ok(out.rows[0]);
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  // Stubs for the remaining three tools — real implementations land in subsequent tasks.
+  for (const name of ['block_project', 'unblock_project', 'retry_project'] as const) {
     server.registerTool(
       name,
       {
