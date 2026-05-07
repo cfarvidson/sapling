@@ -19,7 +19,7 @@ describe('plans tools', () => {
   });
 
   beforeEach(async () => {
-    await db.pool.query('TRUNCATE plans, services, apps RESTART IDENTITY CASCADE');
+    await db.pool.query('TRUNCATE plans, projects, services, apps RESTART IDENTITY CASCADE');
     await client?.close();
     const server = new McpServer({ name: 'sapling-test', version: '0.0.0' });
     registerAllTools(server, db.pool);
@@ -80,6 +80,75 @@ describe('plans tools', () => {
       title: 'x',
       body_markdown: 'x',
       service_id: 9999,
+    });
+    expect(raw.isError).toBe(true);
+    const body = JSON.parse(raw.content[0].text);
+    expect(body.error.code).toBe('not_found');
+  });
+
+  it('create_plan persists project_id and list_plans filters by it', async () => {
+    const app = (
+      await db.pool.query<{ id: number }>(`INSERT INTO apps(name) VALUES ('iris') RETURNING id`)
+    ).rows[0];
+    const project = (
+      await db.pool.query<{ id: number }>(
+        `INSERT INTO projects(app_id, title, description_md, definition_of_done_md)
+         VALUES ($1, 't', 'd', 'dod') RETURNING id`,
+        [app.id],
+      )
+    ).rows[0];
+
+    const created = (await client.call('create_plan', {
+      title: 'project-scoped',
+      body_markdown: 'body',
+      project_id: project.id,
+    })) as { id: number; project_id: number };
+    expect(created.project_id).toBe(project.id);
+
+    await client.call('create_plan', { title: 'unscoped', body_markdown: 'body' });
+
+    const filtered = (await client.call('list_plans', { project_id: project.id })) as Array<{
+      id: number;
+      project_id: number;
+    }>;
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].project_id).toBe(project.id);
+  });
+
+  it('update_plan can attach and detach a project', async () => {
+    const app = (
+      await db.pool.query<{ id: number }>(`INSERT INTO apps(name) VALUES ('iris') RETURNING id`)
+    ).rows[0];
+    const project = (
+      await db.pool.query<{ id: number }>(
+        `INSERT INTO projects(app_id, title, description_md, definition_of_done_md)
+         VALUES ($1, 't', 'd', 'dod') RETURNING id`,
+        [app.id],
+      )
+    ).rows[0];
+    const created = (await client.call('create_plan', {
+      title: 'p',
+      body_markdown: 'b',
+    })) as { id: number };
+
+    const attached = (await client.call('update_plan', {
+      id: created.id,
+      project_id: project.id,
+    })) as { project_id: number | null };
+    expect(attached.project_id).toBe(project.id);
+
+    const detached = (await client.call('update_plan', {
+      id: created.id,
+      project_id: null,
+    })) as { project_id: number | null };
+    expect(detached.project_id).toBeNull();
+  });
+
+  it('create_plan with non-existent project_id returns not_found', async () => {
+    const raw = await client.callRaw('create_plan', {
+      title: 'x',
+      body_markdown: 'x',
+      project_id: 9999,
     });
     expect(raw.isError).toBe(true);
     const body = JSON.parse(raw.content[0].text);

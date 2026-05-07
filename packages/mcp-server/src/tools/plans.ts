@@ -9,7 +9,8 @@ function ok(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
 }
 
-const PLAN_LIST_COLUMNS = 'id, title, status, service_id, parent_plan_id, created_at, updated_at';
+const PLAN_LIST_COLUMNS =
+  'id, title, status, service_id, parent_plan_id, project_id, created_at, updated_at';
 
 export function registerPlans(server: McpServer, db: Db): void {
   server.registerTool(
@@ -21,19 +22,21 @@ export function registerPlans(server: McpServer, db: Db): void {
         body_markdown: z.string(),
         service_id: z.number().int().positive().optional(),
         parent_plan_id: z.number().int().positive().optional(),
+        project_id: z.number().int().positive().optional(),
         status: PlanStatus.default('draft'),
       },
     },
     async (input) => {
       try {
         const { rows } = await db.query(
-          `INSERT INTO plans(title, body_markdown, service_id, parent_plan_id, status)
-           VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+          `INSERT INTO plans(title, body_markdown, service_id, parent_plan_id, project_id, status)
+           VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
           [
             input.title,
             input.body_markdown,
             input.service_id ?? null,
             input.parent_plan_id ?? null,
+            input.project_id ?? null,
             input.status,
           ],
         );
@@ -62,18 +65,23 @@ export function registerPlans(server: McpServer, db: Db): void {
     'list_plans',
     {
       description:
-        'List plans (titles + structured fields, no body) optionally filtered by service or status.',
+        'List plans (titles + structured fields, no body) optionally filtered by service, project, or status.',
       inputSchema: {
         service_id: z.number().int().positive().optional(),
+        project_id: z.number().int().positive().optional(),
         status: PlanStatus.optional(),
       },
     },
-    async ({ service_id, status }) => {
+    async ({ service_id, project_id, status }) => {
       const conds: string[] = [];
       const vals: unknown[] = [];
       if (service_id !== undefined) {
         vals.push(service_id);
         conds.push(`service_id = $${vals.length}`);
+      }
+      if (project_id !== undefined) {
+        vals.push(project_id);
+        conds.push(`project_id = $${vals.length}`);
       }
       if (status !== undefined) {
         vals.push(status);
@@ -99,6 +107,7 @@ export function registerPlans(server: McpServer, db: Db): void {
         status: PlanStatus.optional(),
         service_id: z.number().int().positive().nullable().optional(),
         parent_plan_id: z.number().int().positive().nullable().optional(),
+        project_id: z.number().int().positive().nullable().optional(),
       },
     },
     async ({ id, ...patch }) => {
