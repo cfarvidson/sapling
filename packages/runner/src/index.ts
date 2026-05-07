@@ -1,4 +1,8 @@
+import { createWriteStream, mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import process from 'node:process';
+import type { Writable } from 'node:stream';
+import { createLogger, type Logger } from './logger.js';
 import { createHttpMcpClient, type McpClient } from './mcp_client.js';
 import { tick } from './loop.js';
 import { spawnAgent, type SpawnedAgent } from './spawn.js';
@@ -25,11 +29,6 @@ function parseArgs(argv: string[]): CliArgs {
   return { once, maxSpawn };
 }
 
-function log(msg: string, ctx?: Record<string, unknown>): void {
-  const entry = { ts: new Date().toISOString(), msg, ...(ctx ?? {}) };
-  console.log(JSON.stringify(entry));
-}
-
 const SHUTDOWN_GRACE_MS = 30_000;
 
 async function waitForChildren(running: Set<SpawnedAgent>, deadline: number): Promise<void> {
@@ -38,11 +37,32 @@ async function waitForChildren(running: Set<SpawnedAgent>, deadline: number): Pr
   }
 }
 
+const HEARTBEAT_EVERY = 20;
+const DEFAULT_LOG_FILE = './data/runner.log';
+
+function openLogFile(envVar: string | undefined): Writable | null {
+  // Empty string explicitly disables file logging.
+  if (envVar === '') return null;
+  const path = resolve(envVar ?? DEFAULT_LOG_FILE);
+  mkdirSync(dirname(path), { recursive: true });
+  return createWriteStream(path, { flags: 'a' });
+}
+
+function buildLogger(): Logger {
+  const fileStream = openLogFile(process.env.SAPLING_RUNNER_LOG_FILE);
+  return createLogger({
+    fileStream,
+    writeStdout: (s) => process.stdout.write(s),
+    heartbeatEvery: HEARTBEAT_EVERY,
+  });
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const url = process.env.SAPLING_MCP_URL ?? 'http://127.0.0.1:3333/mcp';
   const token = process.env.MCP_TOKEN;
 
+  const log = buildLogger();
   const mcp: McpClient = await createHttpMcpClient(url, token);
   const running = new Set<SpawnedAgent>();
   let totalSpawned = 0;
