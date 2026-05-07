@@ -103,7 +103,9 @@ The goal is to finish this branch with an **`active` plan** — i.e. one a code 
 
 ### type = 'code'
 
-- If `plan_id` is set, call `mcp__sapling__get_plan(id=plan_id)` and read the body. If status is `draft`, halt and surface the plan to the user — drafts are unverified, do not execute against them. (`completed`/`archived` plans should also halt with a "stale plan" warning.)
+- If `plan_id` is set, call `mcp__sapling__get_plan(id=plan_id)` and read the body. Drafts are unverified, do not execute against them. Stale plans (completed / archived) likewise should not run.
+  - **`status: 'draft'` →** persist the open question via `mcp__sapling__request_human_input({ work_id, questions_markdown })` with a numbered list ("Plan N is draft. Should I (1) activate it and proceed, (2) release the claim so you can rework the plan first, or (3) fail this work item?"). The tool atomically writes a `pending_questions` artifact, flips status to `awaiting_input`, and releases the claim. Then exit. Never print the question to stdout _only_ — sessions can close, and a chat-bound prompt with no persisted artifact is unrecoverable except via `retry_work` after `claim_expires_at` passes. If you are in an interactive session (`$SAPLING_RUNNER` unset) you MAY _additionally_ ask the user in chat for an immediate answer, but the `request_human_input` call must happen first so the question survives session loss; the user can answer in chat (you call `provide_human_input` for them) or later via `/sapling:human`.
+  - **`status: 'completed'` or `'archived'` →** this isn't a user question, it's stale state. Call `mcp__sapling__block_work({ id, reason: "plan N is <completed|archived>; needs a fresh plan or re-target" })` and exit. The user can repoint or fail the item via `/sapling:queue`.
 - Service + app rules are already loaded in step 4 — the rules are binding for this work item.
 - Do the actual work inside the worktree from step 3 (filesystem, git). Sapling does not own the code.
 - For notable artifacts (review notes, draft snippets), call `mcp__sapling__attach_artifact` with `work_item_id`.
