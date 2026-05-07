@@ -37,24 +37,37 @@ async function waitForChildren(running: Set<SpawnedAgent>, deadline: number): Pr
   }
 }
 
+// Consecutive idle ticks before emitting an "alive" heartbeat to stdout.
 const HEARTBEAT_EVERY = 20;
 const DEFAULT_LOG_FILE = './data/runner.log';
 
-function openLogFile(envVar: string | undefined): Writable | null {
-  // Empty string explicitly disables file logging.
+/**
+ * Opens the runner's JSON event log for appending. Creates the parent directory if needed.
+ * Returns null when `envVar` is the empty string (file logging explicitly disabled).
+ */
+function createLogFile(envVar: string | undefined): Writable | null {
   if (envVar === '') return null;
   const path = resolve(envVar ?? DEFAULT_LOG_FILE);
   mkdirSync(dirname(path), { recursive: true });
   return createWriteStream(path, { flags: 'a' });
 }
 
-function buildLogger(): Logger {
-  const fileStream = openLogFile(process.env.SAPLING_RUNNER_LOG_FILE);
-  return createLogger({
+function buildLogger(): { log: Logger; close: () => Promise<void> } {
+  const fileStream = createLogFile(process.env.SAPLING_RUNNER_LOG_FILE);
+  const log = createLogger({
     fileStream,
     writeStdout: (s) => process.stdout.write(s),
     heartbeatEvery: HEARTBEAT_EVERY,
   });
+  const close = (): Promise<void> =>
+    new Promise((resolve, reject) => {
+      if (!fileStream) return resolve();
+      fileStream.end((err: Error | null | undefined) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  return { log, close };
 }
 
 async function main(): Promise<void> {
@@ -62,7 +75,7 @@ async function main(): Promise<void> {
   const url = process.env.SAPLING_MCP_URL ?? 'http://127.0.0.1:3333/mcp';
   const token = process.env.MCP_TOKEN;
 
-  const log = buildLogger();
+  const { log, close: closeLog } = buildLogger();
   const mcp: McpClient = await createHttpMcpClient(url, token);
   const running = new Set<SpawnedAgent>();
   let totalSpawned = 0;
@@ -80,6 +93,7 @@ async function main(): Promise<void> {
     await waitForChildren(running, Date.now() + SHUTDOWN_GRACE_MS);
     for (const child of running) child.kill('SIGKILL');
     await mcp.close();
+    await closeLog();
     process.exit(0);
   };
 
@@ -116,6 +130,7 @@ async function main(): Promise<void> {
     await waitForChildren(running, Date.now() + SHUTDOWN_GRACE_MS);
     await mcp.close();
     log('done', { totalSpawned });
+    await closeLog();
   }
 }
 
