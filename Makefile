@@ -20,7 +20,7 @@ test:
 	pnpm --filter sapling-runner test
 
 runner:
-	pnpm --filter sapling-runner dev
+	SAPLING_RUNNER_LOG_FILE=$(CURDIR)/data/runner.log pnpm --filter sapling-runner dev
 
 nuke:
 	@echo "This will delete ./data/postgres. Press Ctrl-C to cancel."
