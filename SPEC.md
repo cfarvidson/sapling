@@ -245,12 +245,12 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 
 ### Plans (`tools/plans.ts`) — 4 tools
 
-| Tool                                                                              | Purpose                                 |
-| --------------------------------------------------------------------------------- | --------------------------------------- |
-| `create_plan(title, body_markdown, service_id?, parent_plan_id?, status='draft')` | Store a plan.                           |
-| `get_plan(id)`                                                                    | Fetch with body.                        |
-| `list_plans(service_id?, status?)`                                                | Filtered list (titles only, no bodies). |
-| `update_plan(id, ...partial)`                                                     | Patch title/body/status/links.          |
+| Tool                                                                                           | Purpose                                                                                                  |
+| ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `create_plan(title, body_markdown, service_id?, parent_plan_id?, project_id?, status='draft')` | Store a plan. `project_id` links the plan to a project (per-service plan under a multi-service project). |
+| `get_plan(id)`                                                                                 | Fetch with body.                                                                                         |
+| `list_plans(service_id?, project_id?, status?)`                                                | Filtered list (titles only, no bodies).                                                                  |
+| `update_plan(id, ...partial)`                                                                  | Patch title/body/status/links (incl. `project_id`).                                                      |
 
 ### Work queue (`tools/work.ts`) — 11 tools
 
