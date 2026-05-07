@@ -562,10 +562,11 @@ Each spawned agent self-claims via `claim_next_work`. The runner does not pre-al
 
 ### Environment
 
-| Variable          | Default                     | Notes                         |
-| ----------------- | --------------------------- | ----------------------------- |
-| `SAPLING_MCP_URL` | `http://127.0.0.1:3333/mcp` | Streamable HTTP MCP endpoint. |
-| `MCP_TOKEN`       | (none)                      | Optional bearer for `/mcp`.   |
+| Variable                  | Default                     | Notes                                                    |
+| ------------------------- | --------------------------- | -------------------------------------------------------- |
+| `SAPLING_MCP_URL`         | `http://127.0.0.1:3333/mcp` | Streamable HTTP MCP endpoint.                            |
+| `MCP_TOKEN`               | (none)                      | Optional bearer for `/mcp`.                              |
+| `SAPLING_RUNNER_LOG_FILE` | `./data/runner.log`         | JSON event log path. Empty string disables file logging. |
 
 ### Runtime config (in `runner_config`, mutable via `update_runner_config`)
 
@@ -574,6 +575,10 @@ Each spawned agent self-claims via `claim_next_work`. The runner does not pre-al
 - `poll_interval_ms` — read **once at startup** to arm the polling timer; restart required to apply.
 - `claim_ttl_ms` — used by the reaper. Defaults to `7200000` (2 h).
 - `max_claim_attempts` — defaults to `5`.
+
+### Logging
+
+The runner writes every event as a JSON line to the file at `SAPLING_RUNNER_LOG_FILE` (default `./data/runner.log`; empty string disables). The parent directory is created on demand. Stdout is filtered for human reading: `start`, `spawned`, `reaped`, `tick_error`, `shutdown`, `max_spawn_reached`, and `done` always print; idle ticks (`reaped == 0 && spawned == 0`) are suppressed; an `alive — running=N pending=N` heartbeat prints every 20th idle tick.
 
 ### Shutdown
 
@@ -606,20 +611,21 @@ Marketplace entry lives at `.claude-plugin/marketplace.json` and is installed vi
 
 ## 13. Configuration surface
 
-| Setting                                                                 | Where                    | Default                                                     | Notes                                                  |
-| ----------------------------------------------------------------------- | ------------------------ | ----------------------------------------------------------- | ------------------------------------------------------ |
-| `DATABASE_URL`                                                          | `mcp-server` env         | `postgres://sapling:changeme-locally@postgres:5432/sapling` | Set by `docker-compose.yml`.                           |
-| `SAPLING_PORT`                                                          | `mcp-server` env         | `3333`                                                      | Bound to `127.0.0.1`.                                  |
-| `MCP_TOKEN`                                                             | `.env` (server + runner) | (none)                                                      | Optional bearer auth on `/mcp`.                        |
-| `LOG_LEVEL`                                                             | `mcp-server` env         | `info`                                                      | pino level.                                            |
-| `LOG_PAYLOADS`                                                          | `mcp-server` env         | `false`                                                     | When `true`, log tool inputs and outputs (verbose).    |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_PORT` | `.env`                   | `sapling` / `changeme-locally` / `sapling` / `5432`         | Used by the postgres service and `make psql`.          |
-| `SAPLING_MCP_URL`                                                       | runner env               | `http://127.0.0.1:3333/mcp`                                 | Where the runner reaches the MCP server.               |
-| `agent_command`                                                         | `runner_config` table    | `claude --dangerously-skip-permissions -p "/sapling:work"`  | Spawned per slot via `bash -lc`. Applies on next tick. |
-| `max_concurrent`                                                        | `runner_config` table    | `2`                                                         | Applies on next tick.                                  |
-| `poll_interval_ms`                                                      | `runner_config` table    | `30000`                                                     | Read once at startup; restart required.                |
-| `claim_ttl_ms`                                                          | `runner_config` table    | `7200000` (2 h)                                             | Used by `reap_stuck_claims`.                           |
-| `max_claim_attempts`                                                    | `runner_config` table    | `5`                                                         | After this many reaps the item moves to `failed`.      |
+| Setting                                                                 | Where                    | Default                                                     | Notes                                                    |
+| ----------------------------------------------------------------------- | ------------------------ | ----------------------------------------------------------- | -------------------------------------------------------- |
+| `DATABASE_URL`                                                          | `mcp-server` env         | `postgres://sapling:changeme-locally@postgres:5432/sapling` | Set by `docker-compose.yml`.                             |
+| `SAPLING_PORT`                                                          | `mcp-server` env         | `3333`                                                      | Bound to `127.0.0.1`.                                    |
+| `MCP_TOKEN`                                                             | `.env` (server + runner) | (none)                                                      | Optional bearer auth on `/mcp`.                          |
+| `LOG_LEVEL`                                                             | `mcp-server` env         | `info`                                                      | pino level.                                              |
+| `LOG_PAYLOADS`                                                          | `mcp-server` env         | `false`                                                     | When `true`, log tool inputs and outputs (verbose).      |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_PORT` | `.env`                   | `sapling` / `changeme-locally` / `sapling` / `5432`         | Used by the postgres service and `make psql`.            |
+| `SAPLING_MCP_URL`                                                       | runner env               | `http://127.0.0.1:3333/mcp`                                 | Where the runner reaches the MCP server.                 |
+| `SAPLING_RUNNER_LOG_FILE`                                               | runner env               | `./data/runner.log`                                         | JSON event log path. Empty string disables file logging. |
+| `agent_command`                                                         | `runner_config` table    | `claude --dangerously-skip-permissions -p "/sapling:work"`  | Spawned per slot via `bash -lc`. Applies on next tick.   |
+| `max_concurrent`                                                        | `runner_config` table    | `2`                                                         | Applies on next tick.                                    |
+| `poll_interval_ms`                                                      | `runner_config` table    | `30000`                                                     | Read once at startup; restart required.                  |
+| `claim_ttl_ms`                                                          | `runner_config` table    | `7200000` (2 h)                                             | Used by `reap_stuck_claims`.                             |
+| `max_claim_attempts`                                                    | `runner_config` table    | `5`                                                         | After this many reaps the item moves to `failed`.        |
 
 ## 14. Error handling, logging, observability
 
