@@ -806,9 +806,9 @@ describe('block_project / unblock_project', () => {
     })) as { project: { id: number } };
     await client.call('block_project', { id: a.project.id, reason: 'r' });
     const aOut = (await client.call('unblock_project', { id: a.project.id })) as {
-      status: string;
+      project: { status: string };
     };
-    expect(aOut.status).toBe('scoping');
+    expect(aOut.project.status).toBe('scoping');
 
     // Case B: project was in_progress before block → returns to in_progress.
     const svc = await seedService(db, appId, 'svc');
@@ -821,9 +821,9 @@ describe('block_project / unblock_project', () => {
     })) as { project: { id: number } };
     await client.call('block_project', { id: b.project.id, reason: 'r' });
     const bOut = (await client.call('unblock_project', { id: b.project.id })) as {
-      status: string;
+      project: { status: string };
     };
-    expect(bOut.status).toBe('in_progress');
+    expect(bOut.project.status).toBe('in_progress');
   });
 });
 
