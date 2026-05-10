@@ -154,6 +154,47 @@ If you want proactive nudging, pair with `/loop`:
 
 Tradeoff: pull-based means you have to check on your own cadence, but it removes every transport-flakiness failure mode (delivery, permissions, auth) that an outbound notifier would introduce. If proactive notification proves necessary, it ships as a separate phase later.
 
+## Phone notifications (optional)
+
+Sapling ships a self-hosted [ntfy](https://github.com/binwiederhier/ntfy) service in `docker-compose.yml`. When `runner_config.ntfy_url` is set, the runner POSTs a notification for every `awaiting_input` work item that has been waiting longer than `awaiting_input_nag_age_ms` (default 1 h), throttled by `awaiting_input_nag_repeat_ms` (default 6 h).
+
+By default ntfy is bound to `127.0.0.1:8080` — your phone cannot reach it. Pick one exposure path:
+
+### Tailscale (recommended)
+
+1. Install [Tailscale](https://tailscale.com/) on your Mac and your phone; sign in to the same tailnet.
+2. Find your Mac's tailnet IP (`tailscale ip`).
+3. Edit `docker-compose.yml` and change the ntfy port mapping to bind to that IP, e.g. `100.64.0.10:8080:80`.
+4. On your phone, install the ntfy app and subscribe to `http://<mac-tailnet-ip>:8080/sapling` (or any topic name you choose).
+5. Set the runner config:
+   ```bash
+   echo "UPDATE runner_config SET ntfy_url='http://<mac-tailnet-ip>:8080/sapling' WHERE id = 1;" | make psql
+   ```
+
+Works anywhere both devices are online. No public exposure.
+
+### LAN binding
+
+1. Edit `docker-compose.yml` and change `127.0.0.1:8080:80` to `0.0.0.0:8080:80`.
+2. Subscribe via your Mac's LAN IP from the phone.
+3. Set the runner config to that LAN URL.
+
+Works only on the same Wi-Fi as your Mac.
+
+### Cloudflare Tunnel / ngrok
+
+Expose ntfy via a tunnel; **enable ntfy auth first** (see [ntfy auth docs](https://docs.ntfy.sh/config/#access-control)). Subscribe via the public URL.
+
+Works anywhere with internet. Requires auth setup.
+
+### Disable
+
+Set `ntfy_url` back to `NULL`:
+
+```bash
+echo "UPDATE runner_config SET ntfy_url=NULL WHERE id = 1;" | make psql
+```
+
 ## Teams
 
 A **team** lets one work item be executed by a coordinated lead + specialists instead of a solo agent. Teams are first-class rows: create them with `/sapling:teams`, optionally scope them to an app, and attach them to work items either explicitly or via per-(app, work_type) defaults.
