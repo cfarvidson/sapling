@@ -550,6 +550,128 @@ describe('block_project / unblock_project', () => {
     expect(out.failure_reason).toBe('waiting on infra');
   });
 
+  it('cascades to pending children with the marker prefix; leaves claimed alone', async () => {
+    const appId = await seedApp(db, 'iris');
+    const svc = await seedService(db, appId, 'svc');
+    const proj = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+      service_ids: [svc],
+    })) as { project: { id: number }; plan_work_items: Array<{ id: number }> };
+    const projectId = proj.project.id;
+
+    // Manually fabricate child rows in each relevant status so we can verify cascade behavior.
+    const pendingChild = (
+      await db.pool.query<{ id: number }>(
+        `INSERT INTO work_items(type, title, description_markdown, project_id)
+         VALUES ('code', 'p', 'x', $1) RETURNING id`,
+        [projectId],
+      )
+    ).rows[0].id;
+    const claimedChild = (
+      await db.pool.query<{ id: number }>(
+        `INSERT INTO work_items(type, title, description_markdown, project_id, status,
+                                claimed_at, claimed_by, claim_expires_at)
+         VALUES ('code', 'c', 'x', $1, 'claimed', now(), 'agent-x',
+                 now() + interval '1 hour')
+         RETURNING id`,
+        [projectId],
+      )
+    ).rows[0].id;
+    const completedChild = (
+      await db.pool.query<{ id: number }>(
+        `INSERT INTO work_items(type, title, description_markdown, project_id, status, completed_at)
+         VALUES ('code', 'd', 'x', $1, 'completed', now()) RETURNING id`,
+        [projectId],
+      )
+    ).rows[0].id;
+
+    const out = (await client.call('block_project', {
+      id: projectId,
+      reason: 'waiting on infra',
+    })) as { project: { status: string }; cascade_blocked_count: number };
+
+    expect(out.project.status).toBe('blocked');
+    // The auto-fanned-out plan items (1 per service) + the manually inserted pending child
+    // should all be cascaded; the claimed and completed ones should not.
+    expect(out.cascade_blocked_count).toBeGreaterThanOrEqual(2);
+
+    const after = await db.pool.query<{
+      id: number;
+      status: string;
+      failure_reason: string | null;
+    }>(`SELECT id, status, failure_reason FROM work_items WHERE id IN ($1,$2,$3) ORDER BY id`, [
+      pendingChild,
+      claimedChild,
+      completedChild,
+    ]);
+    const byId = new Map(after.rows.map((r) => [r.id, r]));
+    expect(byId.get(pendingChild)).toMatchObject({
+      status: 'blocked',
+      failure_reason: 'project blocked: waiting on infra',
+    });
+    expect(byId.get(claimedChild)?.status).toBe('claimed');
+    expect(byId.get(completedChild)?.status).toBe('completed');
+  });
+
+  it('cascades to awaiting_input children', async () => {
+    const appId = await seedApp(db, 'iris');
+    const svc = await seedService(db, appId, 'svc');
+    const proj = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+      service_ids: [svc],
+    })) as { project: { id: number } };
+    const awaitingChild = (
+      await db.pool.query<{ id: number }>(
+        `INSERT INTO work_items(type, title, description_markdown, project_id, status)
+         VALUES ('code', 'a', 'x', $1, 'awaiting_input') RETURNING id`,
+        [proj.project.id],
+      )
+    ).rows[0].id;
+
+    await client.call('block_project', { id: proj.project.id, reason: 'r' });
+
+    const after = await db.pool.query<{ status: string; failure_reason: string | null }>(
+      `SELECT status, failure_reason FROM work_items WHERE id = $1`,
+      [awaitingChild],
+    );
+    expect(after.rows[0].status).toBe('blocked');
+    expect(after.rows[0].failure_reason).toBe('project blocked: r');
+  });
+
+  it('does not double-block already-blocked children (idempotent on status)', async () => {
+    const appId = await seedApp(db, 'iris');
+    const svc = await seedService(db, appId, 'svc');
+    const proj = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+      service_ids: [svc],
+    })) as { project: { id: number } };
+    // An operator-blocked child with a *different* reason — must not be re-stamped.
+    const operatorBlockedChild = (
+      await db.pool.query<{ id: number }>(
+        `INSERT INTO work_items(type, title, description_markdown, project_id, status, failure_reason)
+         VALUES ('code', 'op', 'x', $1, 'blocked', 'operator: external dep') RETURNING id`,
+        [proj.project.id],
+      )
+    ).rows[0].id;
+
+    await client.call('block_project', { id: proj.project.id, reason: 'r' });
+
+    const after = await db.pool.query<{ failure_reason: string | null }>(
+      `SELECT failure_reason FROM work_items WHERE id = $1`,
+      [operatorBlockedChild],
+    );
+    expect(after.rows[0].failure_reason).toBe('operator: external dep');
+  });
+
   it('rejects block from terminal done/cancelled with conflict', async () => {
     await seedApp(db, 'iris');
     const r = (await client.call('create_project', {
