@@ -545,9 +545,9 @@ describe('block_project / unblock_project', () => {
     const out = (await client.call('block_project', {
       id: r.project.id,
       reason: 'waiting on infra',
-    })) as { status: string; failure_reason: string };
-    expect(out.status).toBe('blocked');
-    expect(out.failure_reason).toBe('waiting on infra');
+    })) as { project: { status: string; failure_reason: string }; cascade_blocked_count: number };
+    expect(out.project.status).toBe('blocked');
+    expect(out.project.failure_reason).toBe('waiting on infra');
   });
 
   it('cascades to pending children with the marker prefix; leaves claimed alone', async () => {

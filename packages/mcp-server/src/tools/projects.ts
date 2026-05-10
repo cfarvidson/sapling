@@ -425,29 +425,53 @@ export function registerProjects(server: McpServer, db: Db): void {
     'block_project',
     {
       description:
-        'Block a project on an external dependency from scoping/in_progress. Does not cascade to children — they continue. Reason is required.',
+        "Block a project on an external dependency from scoping/in_progress. Cascades child work items in 'pending' and 'awaiting_input' to 'blocked' (claimed children are left running — Sapling cannot kill agent processes). The reserved failure_reason prefix 'project blocked: ' marks cascade-blocked rows so unblock_project can target them. Reason is required.",
       inputSchema: {
         id: z.number().int().positive(),
         reason: z.string().min(1),
       },
     },
     async ({ id, reason }) => {
-      const { rows } = await db.query(
-        `UPDATE projects
-            SET status='blocked',
-                failure_reason=$2,
-                updated_at=now()
-          WHERE id=$1 AND status IN ('scoping','in_progress')
-         RETURNING *`,
-        [id, reason],
-      );
-      if (rows.length === 0) {
-        const exists = await db.query(`SELECT id FROM projects WHERE id=$1`, [id]);
-        if (exists.rowCount === 0)
-          return errorToToolResult(new AppError('not_found', `project ${id} not found`));
-        return errorToToolResult(new AppError('conflict', `project ${id} is in a terminal state`));
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        const updProj = await client.query(
+          `UPDATE projects
+              SET status='blocked',
+                  failure_reason=$2,
+                  updated_at=now()
+            WHERE id=$1 AND status IN ('scoping','in_progress')
+           RETURNING *`,
+          [id, reason],
+        );
+        if (updProj.rowCount === 0) {
+          await client.query('ROLLBACK');
+          const exists = await db.query(`SELECT id FROM projects WHERE id=$1`, [id]);
+          if (exists.rowCount === 0)
+            return errorToToolResult(new AppError('not_found', `project ${id} not found`));
+          return errorToToolResult(
+            new AppError('conflict', `project ${id} is in a terminal state`),
+          );
+        }
+
+        const cascade = await client.query(
+          `UPDATE work_items
+              SET status='blocked',
+                  failure_reason=$2,
+                  updated_at=now()
+            WHERE project_id=$1
+              AND status IN ('pending','awaiting_input')`,
+          [id, `project blocked: ${reason}`],
+        );
+
+        await client.query('COMMIT');
+        return ok({ project: updProj.rows[0], cascade_blocked_count: cascade.rowCount ?? 0 });
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      } finally {
+        client.release();
       }
-      return ok(rows[0]);
     },
   );
 
