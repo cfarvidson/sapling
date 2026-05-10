@@ -27,6 +27,9 @@ describe('runner_config tools', () => {
               poll_interval_ms = DEFAULT,
               claim_ttl_ms = DEFAULT,
               max_claim_attempts = DEFAULT,
+              ntfy_url = NULL,
+              awaiting_input_nag_age_ms = DEFAULT,
+              awaiting_input_nag_repeat_ms = DEFAULT,
               updated_at = now()
         WHERE id = 1`,
     );
@@ -83,5 +86,41 @@ describe('runner_config tools', () => {
     expect(zero.isError).toBe(true);
     const neg = await client.callRaw('update_runner_config', { max_concurrent: -1 });
     expect(neg.isError).toBe(true);
+  });
+
+  it('accepts ntfy_url, awaiting_input_nag_age_ms, awaiting_input_nag_repeat_ms', async () => {
+    const out = (await client.call('update_runner_config', {
+      ntfy_url: 'http://localhost:8080/sapling',
+      awaiting_input_nag_age_ms: 60_000,
+      awaiting_input_nag_repeat_ms: 300_000,
+    })) as Record<string, unknown>;
+    expect(out.ntfy_url).toBe('http://localhost:8080/sapling');
+    expect(out.awaiting_input_nag_age_ms).toBe(60_000);
+    expect(out.awaiting_input_nag_repeat_ms).toBe(300_000);
+  });
+
+  it('accepts explicit null to clear ntfy_url', async () => {
+    await client.call('update_runner_config', { ntfy_url: 'http://localhost:8080/sapling' });
+    const out = (await client.call('update_runner_config', {
+      ntfy_url: null,
+    })) as Record<string, unknown>;
+    expect(out.ntfy_url).toBeNull();
+  });
+
+  it('rejects empty-string ntfy_url with invalid_input', async () => {
+    const raw = await client.callRaw('update_runner_config', { ntfy_url: '' });
+    expect(raw.isError).toBe(true);
+  });
+
+  it('rejects non-positive nag thresholds with invalid_input', async () => {
+    const raw = await client.callRaw('update_runner_config', { awaiting_input_nag_age_ms: 0 });
+    expect(raw.isError).toBe(true);
+  });
+
+  it('get_runner_config returns the new fields with defaults', async () => {
+    const out = (await client.call('get_runner_config', {})) as Record<string, unknown>;
+    expect(out.ntfy_url).toBeNull();
+    expect(out.awaiting_input_nag_age_ms).toBe(3600000);
+    expect(out.awaiting_input_nag_repeat_ms).toBe(21600000);
   });
 });

@@ -278,10 +278,10 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 
 ### Runner config (`tools/runner_config.ts`) — 2 tools
 
-| Tool                                                                                                               | Purpose                        |
-| ------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
-| `get_runner_config()`                                                                                              | Read the singleton config row. |
-| `update_runner_config({ agent_command?, max_concurrent?, poll_interval_ms?, claim_ttl_ms?, max_claim_attempts? })` | Partial upsert.                |
+| Tool                                                                                                                                                                                     | Purpose                                                             |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `get_runner_config()`                                                                                                                                                                    | Read the singleton config row.                                      |
+| `update_runner_config({ agent_command?, max_concurrent?, poll_interval_ms?, claim_ttl_ms?, max_claim_attempts?, ntfy_url?, awaiting_input_nag_age_ms?, awaiting_input_nag_repeat_ms? })` | Partial upsert. `ntfy_url` accepts `null` to disable notifications. |
 
 ### Human-in-the-loop (`tools/human_input.ts`) — 2 tools
 
@@ -575,6 +575,9 @@ Each spawned agent self-claims via `claim_next_work`. The runner does not pre-al
 - `poll_interval_ms` — read **once at startup** to arm the polling timer; restart required to apply.
 - `claim_ttl_ms` — used by the reaper. Defaults to `7200000` (2 h).
 - `max_claim_attempts` — defaults to `5`.
+- `ntfy_url` — optional ntfy topic URL for `awaiting_input` notifications. `NULL` disables notifications.
+- `awaiting_input_nag_age_ms` — minimum age before an `awaiting_input` item is nagged. Defaults to `3600000` (1 h).
+- `awaiting_input_nag_repeat_ms` — minimum interval between repeat nags for the same item. Defaults to `21600000` (6 h).
 
 ### Logging
 
@@ -626,6 +629,9 @@ Marketplace entry lives at `.claude-plugin/marketplace.json` and is installed vi
 | `poll_interval_ms`                                                      | `runner_config` table    | `30000`                                                     | Read once at startup; restart required.                  |
 | `claim_ttl_ms`                                                          | `runner_config` table    | `7200000` (2 h)                                             | Used by `reap_stuck_claims`.                             |
 | `max_claim_attempts`                                                    | `runner_config` table    | `5`                                                         | After this many reaps the item moves to `failed`.        |
+| `ntfy_url`                                                              | `runner_config` table    | `NULL`                                                      | ntfy topic URL for `awaiting_input` notifications.       |
+| `awaiting_input_nag_age_ms`                                             | `runner_config` table    | `3600000` (1 h)                                             | Minimum age before nagging.                              |
+| `awaiting_input_nag_repeat_ms`                                          | `runner_config` table    | `21600000` (6 h)                                            | Minimum interval between repeat nags.                    |
 
 ## 14. Error handling, logging, observability
 
