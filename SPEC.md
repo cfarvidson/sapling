@@ -81,7 +81,7 @@ Two services in `docker-compose.yml`. An optional third process (`sapling-runner
 - **Bound to `127.0.0.1:3333`.** Not network-reachable. Postgres is bound to loopback as well.
 - **Optional bearer auth** via `MCP_TOKEN`. Off by default. Applied only to `/mcp`; `/health` is always open.
 - **Postgres** pinned to `postgres:16-alpine`; data persisted to `./data/postgres` (gitignored). Postgres 15+ syntax (`UNIQUE NULLS NOT DISTINCT`) is in use.
-- **No outbound transports.** Discoverability is pull-based (`/sapling:human`, `/sapling:status`).
+- **No outbound transports beyond the opt-in ntfy notifier.** General discoverability is pull-based (`/sapling:human`, `/sapling:status`).
 - **Atomic claim** via `FOR UPDATE SKIP LOCKED`. Race losers get `null`, treated as "queue empty," not an error.
 - **Self-hosted ntfy** as a third compose service (loopback by default). The runner POSTs to it on stale `awaiting_input` items when `runner_config.ntfy_url` is set. Operator chooses an exposure path (Tailscale recommended, LAN, or Cloudflare Tunnel) — see README.
 
