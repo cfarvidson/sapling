@@ -672,6 +672,109 @@ describe('block_project / unblock_project', () => {
     expect(after.rows[0].failure_reason).toBe('operator: external dep');
   });
 
+  it('cascade-unblocks children whose failure_reason starts with the marker prefix', async () => {
+    const appId = await seedApp(db, 'iris');
+    const svc = await seedService(db, appId, 'svc');
+    const proj = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+      service_ids: [svc],
+    })) as { project: { id: number }; plan_work_items: Array<{ id: number }> };
+    const projectId = proj.project.id;
+    const operatorBlockedChild = (
+      await db.pool.query<{ id: number }>(
+        `INSERT INTO work_items(type, title, description_markdown, project_id, status, failure_reason)
+         VALUES ('code', 'op', 'x', $1, 'blocked', 'operator: external dep') RETURNING id`,
+        [projectId],
+      )
+    ).rows[0].id;
+
+    await client.call('block_project', { id: projectId, reason: 'r' });
+    const out = (await client.call('unblock_project', { id: projectId })) as {
+      project: { status: string };
+      cascade_unblocked_count: number;
+    };
+
+    expect(out.cascade_unblocked_count).toBeGreaterThanOrEqual(1);
+    // Operator-blocked child stayed blocked.
+    const op = await db.pool.query<{ status: string; failure_reason: string | null }>(
+      `SELECT status, failure_reason FROM work_items WHERE id = $1`,
+      [operatorBlockedChild],
+    );
+    expect(op.rows[0].status).toBe('blocked');
+    expect(op.rows[0].failure_reason).toBe('operator: external dep');
+    // Cascade-blocked children are back to pending with cleared failure_reason.
+    const cascaded = await db.pool.query<{ status: string; failure_reason: string | null }>(
+      `SELECT status, failure_reason FROM work_items
+        WHERE project_id = $1 AND id <> $2`,
+      [projectId, operatorBlockedChild],
+    );
+    for (const r of cascaded.rows) {
+      expect(r.status).toBe('pending');
+      expect(r.failure_reason).toBeNull();
+    }
+  });
+
+  it('replays every completion that happened during the blocked window, not just the most recent', async () => {
+    const appId = await seedApp(db, 'iris');
+    const svc1 = await seedService(db, appId, 'svc1');
+    const svc2 = await seedService(db, appId, 'svc2');
+    const proj = (await client.call('create_project', {
+      app_name: 'iris',
+      title: 't',
+      description_md: 'd',
+      definition_of_done_md: 'dod',
+      service_ids: [svc1, svc2],
+    })) as { project: { id: number } };
+    const projectId = proj.project.id;
+
+    // Manually wire two plans + one code child each, then complete the code children
+    // to set up state where two per-plan reviews would have been auto-enqueued
+    // but for the project being blocked.
+    const planA = (
+      await db.pool.query<{ id: number }>(
+        `INSERT INTO plans(title, body_markdown, project_id) VALUES ('A','x',$1) RETURNING id`,
+        [projectId],
+      )
+    ).rows[0].id;
+    const planB = (
+      await db.pool.query<{ id: number }>(
+        `INSERT INTO plans(title, body_markdown, project_id) VALUES ('B','x',$1) RETURNING id`,
+        [projectId],
+      )
+    ).rows[0].id;
+    const codeA = (
+      await db.pool.query<{ id: number }>(
+        `INSERT INTO work_items(type, title, description_markdown, plan_id, project_id, status, completed_at)
+         VALUES ('code', 'cA', 'x', $1, $2, 'completed', now() - interval '20 minutes') RETURNING id`,
+        [planA, projectId],
+      )
+    ).rows[0].id;
+    const codeB = (
+      await db.pool.query<{ id: number }>(
+        `INSERT INTO work_items(type, title, description_markdown, plan_id, project_id, status, completed_at)
+         VALUES ('code', 'cB', 'x', $1, $2, 'completed', now() - interval '10 minutes') RETURNING id`,
+        [planB, projectId],
+      )
+    ).rows[0].id;
+    void codeA;
+    void codeB;
+    await db.pool.query(`UPDATE projects SET status='blocked' WHERE id=$1`, [projectId]);
+
+    await client.call('unblock_project', { id: projectId });
+
+    const reviewsByPlan = await db.pool.query<{ plan_id: number }>(
+      `SELECT plan_id FROM work_items
+        WHERE project_id = $1 AND type='review' AND is_dod_verifier = false
+        ORDER BY plan_id`,
+      [projectId],
+    );
+    const planIds = reviewsByPlan.rows.map((r) => r.plan_id);
+    expect(planIds).toEqual([planA, planB].sort((a, b) => a - b));
+  });
+
   it('rejects block from terminal done/cancelled with conflict', async () => {
     await seedApp(db, 'iris');
     const r = (await client.call('create_project', {
