@@ -325,6 +325,8 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 
 > The `'project blocked: '` prefix on `failure_reason` is reserved. Operators must not use it in `block_work` reason text, or the row will be swept by `unblock_project`'s cascade-unblock.
 
+> **`awaiting_input` semantics through the cascade (v1):** when `block_project` cascades an `awaiting_input` child to `blocked`, the original `pending_questions` artifact is preserved on the row but the runtime `awaiting_input` state is lost. On `unblock_project` the row returns to `pending`, not back to `awaiting_input` — the next agent that claims it will not see it as "paused waiting for an answer." This is an accepted v1 simplification (no `was_status` marker); operators who rely on the question being re-surfaced should `request_human_input` again after unblocking.
+
 ## 8. Work-item lifecycle
 
 ```
