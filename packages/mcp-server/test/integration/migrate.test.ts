@@ -33,6 +33,24 @@ describe('migrate', () => {
     ]);
   });
 
+  it('adds ntfy and awaiting-input nag columns to runner_config (010)', async () => {
+    const { rows } = await db.pool.query<{ column_name: string; column_default: string | null }>(
+      `SELECT column_name, column_default FROM information_schema.columns
+       WHERE table_schema='public' AND table_name='runner_config'
+         AND column_name IN ('ntfy_url', 'awaiting_input_nag_age_ms', 'awaiting_input_nag_repeat_ms')
+       ORDER BY column_name`,
+    );
+    expect(rows.map((r) => r.column_name)).toEqual([
+      'awaiting_input_nag_age_ms',
+      'awaiting_input_nag_repeat_ms',
+      'ntfy_url',
+    ]);
+    const byName = Object.fromEntries(rows.map((r) => [r.column_name, r.column_default]));
+    expect(byName['awaiting_input_nag_age_ms']).toBe('3600000');
+    expect(byName['awaiting_input_nag_repeat_ms']).toBe('21600000');
+    expect(byName['ntfy_url']).toBeNull();
+  });
+
   it('is idempotent — running twice does not fail or duplicate', async () => {
     const first = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text as count FROM _migrations`,
