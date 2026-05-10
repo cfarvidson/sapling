@@ -78,6 +78,7 @@ async function main(): Promise<void> {
   const { log, close: closeLog } = buildLogger();
   const mcp: McpClient = await createHttpMcpClient(url, token);
   const running = new Set<SpawnedAgent>();
+  const notifierState = new Map<number, Date>();
   let totalSpawned = 0;
   let stopping = false;
   let interval: NodeJS.Timeout | null = null;
@@ -100,7 +101,14 @@ async function main(): Promise<void> {
   const doTick = async (): Promise<void> => {
     if (stopping) return;
     try {
-      const r = await tick({ mcp, spawn: spawnAgent, env: process.env, running, log });
+      const r = await tick({
+        mcp,
+        spawn: spawnAgent,
+        env: process.env,
+        running,
+        log,
+        notifierState,
+      });
       log('tick', { ...r });
       totalSpawned += r.spawned;
       if (args.maxSpawn !== null && totalSpawned >= args.maxSpawn) {
