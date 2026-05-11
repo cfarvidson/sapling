@@ -4,6 +4,8 @@ import type { Db } from '../db.js';
 import { AppError, errorToToolResult, mapPgError } from '../errors.js';
 import { nextCronTick, nextNCronTicks, validateCron, validateTimezone } from '../cron.js';
 import { findScheduleByIdOrName, listSchedules, recentRuns } from '../schedules/db.js';
+import { fireSchedule } from '../schedules/fire.js';
+import { createLogger } from '../logger.js';
 
 function ok(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
@@ -22,9 +24,11 @@ const CreateInput = {
   definition_of_done_md: z.string().min(1),
 };
 
-const NotPatchable = z.never({
-  errorMap: () => ({ message: 'field is not patchable; recreate the schedule to change it' }),
-}).optional();
+const NotPatchable = z
+  .never({
+    errorMap: () => ({ message: 'field is not patchable; recreate the schedule to change it' }),
+  })
+  .optional();
 
 const UpdateInput = {
   id: z.number().int().positive(),
@@ -255,5 +259,19 @@ export function registerSchedules(server: McpServer, db: Db): void {
     },
   );
 
-  // run_schedule_now is registered in Task 9 once the fire path exists.
+  server.registerTool(
+    'run_schedule_now',
+    {
+      description:
+        'Fire a schedule out-of-band immediately. Honors overlap_policy (a skip_if_running schedule with a non-terminal prior project will record a skipped_overlap run). Records a schedule_runs row.',
+      inputSchema: { id: z.number().int().positive() },
+    },
+    async (input) => {
+      const sched = await findScheduleByIdOrName(db, input.id);
+      if (!sched) return errorToToolResult(new AppError('not_found', 'schedule not found'));
+      const log = createLogger('info');
+      const outcome = await fireSchedule({ db, schedule: sched, log, now: new Date() });
+      return ok(outcome);
+    },
+  );
 }

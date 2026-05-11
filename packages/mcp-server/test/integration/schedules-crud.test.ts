@@ -154,4 +154,15 @@ describe('schedule CRUD tools', () => {
     ]);
     expect(rowCount).toBe(0);
   });
+
+  it('run_schedule_now fires immediately, ignoring next_run_at', async () => {
+    await db.pool.query(`INSERT INTO services(app_id, name, repo_url) VALUES (1, 'svc', 'u')`);
+    const c = (await client.call('create_schedule', valid)) as { id: number };
+    await db.pool.query(
+      `UPDATE schedules SET next_run_at = now() + interval '1 year' WHERE id = $1`,
+      [c.id],
+    );
+    const out = (await client.call('run_schedule_now', { id: c.id })) as { status: string };
+    expect(out.status).toBe('fired');
+  });
 });
