@@ -144,7 +144,7 @@ describe('projects — end-to-end lifecycles', () => {
     expect(verifiers.rowCount).toBe(1);
   });
 
-  it('DoD verifier failure path: attach dod_gaps and retry_project re-enqueues a fresh verifier', async () => {
+  it('DoD verifier failure path: dod_verified=false bumps counter, fixes complete, fresh verifier auto-arms, success on round two', async () => {
     const apr = await db.pool.query<{ id: number }>(
       `INSERT INTO apps(name) VALUES ('iris') RETURNING id`,
     );
@@ -166,54 +166,46 @@ describe('projects — end-to-end lifecycles', () => {
       `SELECT id FROM work_items WHERE project_id=$1 AND is_dod_verifier=true`,
       [projectId],
     );
-    expect(verifier.rowCount).toBe(1);
 
-    // Verifier completes WITH a dod_gaps artifact attached.
     await client.call('attach_artifact', {
       kind: 'dod_gaps',
       title: 'Missing tests',
       body_markdown: 'No e2e tests for Okta path.',
       work_item_id: verifier.rows[0].id,
     });
-    await client.call('complete_work', { id: verifier.rows[0].id });
-
-    // Project flipped to done because the helper currently treats a completed verifier as success.
-    // The skill convention: failed-DoD verifier should call fail_work instead. Test the spec'd retry_project path:
-    // simulate "user enqueues more work + retries".
-    let proj = await db.pool.query<{ status: string }>(`SELECT status FROM projects WHERE id=$1`, [
-      projectId,
-    ]);
-    expect(proj.rows[0].status).toBe('done');
-
-    // Add follow-on work.
-    const more = (await client.call('enqueue_work', {
+    const fix = (await client.call('enqueue_work', {
       type: 'code',
       title: 'add tests',
       description_markdown: 'd',
       service_id: svc.rows[0].id,
       project_id: projectId,
     })) as { id: number };
+    await client.call('complete_work', { id: verifier.rows[0].id, dod_verified: false });
 
-    // Retry project: status → in_progress, verifier → pending.
-    await client.call('retry_project', { id: projectId });
-    proj = await db.pool.query<{ status: string }>(`SELECT status FROM projects WHERE id=$1`, [
-      projectId,
-    ]);
-    expect(proj.rows[0].status).toBe('in_progress');
-
-    const verifierAfter = await db.pool.query<{ status: string }>(
-      `SELECT status FROM work_items WHERE id=$1`,
-      [verifier.rows[0].id],
-    );
-    expect(verifierAfter.rows[0].status).toBe('pending');
-
-    // Complete the new code item (verifier already exists, so no new one is enqueued).
-    await client.call('complete_work', { id: more.id });
-    const verifiers = await db.pool.query(
-      `SELECT count(*)::int AS n FROM work_items WHERE project_id=$1 AND is_dod_verifier=true`,
+    let proj = await db.pool.query<{ status: string; dod_cycle_count: number }>(
+      `SELECT status, dod_cycle_count FROM projects WHERE id=$1`,
       [projectId],
     );
-    expect(verifiers.rows[0].n).toBe(1);
+    expect(proj.rows[0].status).toBe('in_progress');
+    expect(proj.rows[0].dod_cycle_count).toBe(1);
+
+    await client.call('complete_work', { id: fix.id });
+
+    const v2 = await db.pool.query<{ id: number; status: string }>(
+      `SELECT id, status FROM work_items
+         WHERE project_id=$1 AND is_dod_verifier=true
+         ORDER BY id DESC LIMIT 1`,
+      [projectId],
+    );
+    expect(v2.rows[0].status).toBe('pending');
+
+    await client.call('complete_work', { id: v2.rows[0].id, dod_verified: true });
+    proj = await db.pool.query<{ status: string; dod_cycle_count: number }>(
+      `SELECT status, dod_cycle_count FROM projects WHERE id=$1`,
+      [projectId],
+    );
+    expect(proj.rows[0].status).toBe('done');
+    expect(proj.rows[0].dod_cycle_count).toBe(1);
   });
 
   it('app delete cascade: deleting an app removes its projects and orphans work_items.project_id', async () => {
