@@ -20,7 +20,9 @@ export function registerRunnerConfig(server: McpServer, db: Db): void {
       const { rows } = await db.query(`SELECT * FROM runner_config WHERE id = 1`);
       if (rows.length === 0)
         return errorToToolResult(new AppError('not_found', 'runner_config row missing'));
-      return ok(rows[0]);
+      const row = { ...rows[0] };
+      if (row.github_token != null) row.github_token = '***';
+      return ok(row);
     },
   );
 
@@ -38,6 +40,8 @@ export function registerRunnerConfig(server: McpServer, db: Db): void {
         ntfy_url: z.string().min(1).nullable().optional(),
         awaiting_input_nag_age_ms: PositiveInt.optional(),
         awaiting_input_nag_repeat_ms: PositiveInt.optional(),
+        github_token: z.string().min(1).nullable().optional(),
+        github_default_visibility: z.enum(['all', 'public', 'private']).optional(),
       },
     },
     async (input) => {
@@ -52,6 +56,8 @@ export function registerRunnerConfig(server: McpServer, db: Db): void {
         'ntfy_url',
         'awaiting_input_nag_age_ms',
         'awaiting_input_nag_repeat_ms',
+        'github_token',
+        'github_default_visibility',
       ];
       for (const k of fields) {
         const v = input[k];
@@ -70,7 +76,9 @@ export function registerRunnerConfig(server: McpServer, db: Db): void {
           `UPDATE runner_config SET ${sets.join(', ')} WHERE id = 1 RETURNING *`,
           vals,
         );
-        return ok(rows[0]);
+        const row = { ...rows[0] };
+        if (row.github_token != null) row.github_token = '***';
+        return ok(row);
       } catch (err) {
         return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
       }

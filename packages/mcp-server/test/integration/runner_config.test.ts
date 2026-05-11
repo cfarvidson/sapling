@@ -30,6 +30,8 @@ describe('runner_config tools', () => {
               ntfy_url = NULL,
               awaiting_input_nag_age_ms = DEFAULT,
               awaiting_input_nag_repeat_ms = DEFAULT,
+              github_token = NULL,
+              github_default_visibility = DEFAULT,
               updated_at = now()
         WHERE id = 1`,
     );
@@ -54,6 +56,8 @@ describe('runner_config tools', () => {
     expect(cfg.poll_interval_ms).toBe(30000);
     expect(cfg.claim_ttl_ms).toBe(7200000);
     expect(cfg.max_claim_attempts).toBe(5);
+    expect(cfg.github_token).toBeNull();
+    expect((cfg as Record<string, unknown>).github_default_visibility).toBe('all');
 
     const { rowCount } = await db.pool.query(`SELECT id FROM runner_config`);
     expect(rowCount).toBe(1);
@@ -122,5 +126,36 @@ describe('runner_config tools', () => {
     expect(out.ntfy_url).toBeNull();
     expect(out.awaiting_input_nag_age_ms).toBe(3600000);
     expect(out.awaiting_input_nag_repeat_ms).toBe(21600000);
+  });
+
+  it('redacts github_token on get_runner_config when set', async () => {
+    await client.call('update_runner_config', { github_token: 'ghp_secret_xyz' });
+    const out = (await client.call('get_runner_config', {})) as Record<string, unknown>;
+    expect(out.github_token).toBe('***');
+  });
+
+  it('returns null github_token when unset', async () => {
+    const out = (await client.call('get_runner_config', {})) as Record<string, unknown>;
+    expect(out.github_token).toBeNull();
+  });
+
+  it('accepts null github_token to clear it', async () => {
+    await client.call('update_runner_config', { github_token: 'ghp_x' });
+    const out = (await client.call('update_runner_config', { github_token: null })) as Record<
+      string,
+      unknown
+    >;
+    expect(out.github_token).toBeNull();
+  });
+
+  it('accepts github_default_visibility and rejects unknown values', async () => {
+    const out = (await client.call('update_runner_config', {
+      github_default_visibility: 'public',
+    })) as Record<string, unknown>;
+    expect(out.github_default_visibility).toBe('public');
+    const raw = await client.callRaw('update_runner_config', {
+      github_default_visibility: 'sometimes',
+    });
+    expect(raw.isError).toBe(true);
   });
 });
