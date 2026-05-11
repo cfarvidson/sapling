@@ -125,4 +125,33 @@ describe('projects — DoD fix loop', () => {
     expect(proj.rows[0].status).toBe('done');
     expect(proj.rows[0].dod_cycle_count).toBe(0);
   });
+
+  it('strictness: dod_verified on a non-verifier work item returns invalid_input', async () => {
+    const apr = await db.pool.query<{ id: number }>(
+      `INSERT INTO apps(name) VALUES ('iris') RETURNING id`,
+    );
+    const svc = await db.pool.query<{ id: number }>(
+      `INSERT INTO services(app_id, name) VALUES ($1, 'svc') RETURNING id`,
+      [apr.rows[0].id],
+    );
+    const code = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 'c',
+      description_markdown: 'd',
+      service_id: svc.rows[0].id,
+    })) as { id: number };
+
+    const raw = await client.callRaw('complete_work', {
+      id: code.id,
+      dod_verified: false,
+    });
+    expect(raw.isError).toBe(true);
+    expect(JSON.parse(raw.content[0].text).error.code).toBe('invalid_input');
+
+    const w = await db.pool.query<{ status: string }>(
+      `SELECT status FROM work_items WHERE id=$1`,
+      [code.id],
+    );
+    expect(w.rows[0].status).toBe('pending');
+  });
 });
