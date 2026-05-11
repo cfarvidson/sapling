@@ -425,29 +425,53 @@ export function registerProjects(server: McpServer, db: Db): void {
     'block_project',
     {
       description:
-        'Block a project on an external dependency from scoping/in_progress. Does not cascade to children — they continue. Reason is required.',
+        "Block a project on an external dependency from scoping/in_progress. Cascades child work items in 'pending' and 'awaiting_input' to 'blocked' (claimed children are left running — Sapling cannot kill agent processes). The reserved failure_reason prefix 'project blocked: ' marks cascade-blocked rows so unblock_project can target them. Reason is required.",
       inputSchema: {
         id: z.number().int().positive(),
         reason: z.string().min(1),
       },
     },
     async ({ id, reason }) => {
-      const { rows } = await db.query(
-        `UPDATE projects
-            SET status='blocked',
-                failure_reason=$2,
-                updated_at=now()
-          WHERE id=$1 AND status IN ('scoping','in_progress')
-         RETURNING *`,
-        [id, reason],
-      );
-      if (rows.length === 0) {
-        const exists = await db.query(`SELECT id FROM projects WHERE id=$1`, [id]);
-        if (exists.rowCount === 0)
-          return errorToToolResult(new AppError('not_found', `project ${id} not found`));
-        return errorToToolResult(new AppError('conflict', `project ${id} is in a terminal state`));
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        const updProj = await client.query(
+          `UPDATE projects
+              SET status='blocked',
+                  failure_reason=$2,
+                  updated_at=now()
+            WHERE id=$1 AND status IN ('scoping','in_progress')
+           RETURNING *`,
+          [id, reason],
+        );
+        if (updProj.rowCount === 0) {
+          await client.query('ROLLBACK');
+          const exists = await db.query(`SELECT id FROM projects WHERE id=$1`, [id]);
+          if (exists.rowCount === 0)
+            return errorToToolResult(new AppError('not_found', `project ${id} not found`));
+          return errorToToolResult(
+            new AppError('conflict', `project ${id} is in a terminal state`),
+          );
+        }
+
+        const cascade = await client.query(
+          `UPDATE work_items
+              SET status='blocked',
+                  failure_reason=$2,
+                  updated_at=now()
+            WHERE project_id=$1
+              AND status IN ('pending','awaiting_input')`,
+          [id, `project blocked: ${reason}`],
+        );
+
+        await client.query('COMMIT');
+        return ok({ project: updProj.rows[0], cascade_blocked_count: cascade.rowCount ?? 0 });
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
+      } finally {
+        client.release();
       }
-      return ok(rows[0]);
     },
   );
 
@@ -455,7 +479,7 @@ export function registerProjects(server: McpServer, db: Db): void {
     'unblock_project',
     {
       description:
-        'Unblock a project. Recomputes target state from children: scoping if a scoping plan-type work item is still pending/claimed, else in_progress. Replays auto-enqueue triggers that fired while blocked.',
+        'Unblock a project. Recomputes target state from children: scoping if a scoping plan-type work item is still pending/claimed, else in_progress. Cascade-unblocks children whose failure_reason starts with the reserved prefix "project blocked: ". Replays auto-enqueue triggers by iterating *every* completed non-verifier child in completed_at order (the helper is idempotent).',
       inputSchema: { id: z.number().int().positive() },
     },
     async ({ id }) => {
@@ -483,15 +507,29 @@ export function registerProjects(server: McpServer, db: Db): void {
           [id],
         );
         const target = scopingInFlight.rows[0].n > 0 ? 'scoping' : 'in_progress';
-        const upd = await client.query(
+        const updProj = await client.query(
           `UPDATE projects
               SET status=$2, failure_reason=NULL, updated_at=now()
             WHERE id=$1 RETURNING *`,
           [id, target],
         );
 
-        // Replay any auto-enqueue triggers that were skipped while blocked.
-        const recent = await client.query<{
+        // Cascade-unblock children carrying the reserved marker prefix.
+        const cascade = await client.query(
+          `UPDATE work_items
+              SET status='pending',
+                  failure_reason=NULL,
+                  updated_at=now()
+            WHERE project_id=$1
+              AND status='blocked'
+              AND failure_reason LIKE 'project blocked: %'`,
+          [id],
+        );
+
+        // Replay every completion that happened during the blocked window, in chronological order.
+        // The helper's per-plan-review and DoD-verifier branches are gated on "no existing review/verifier",
+        // so replaying triggers that already fired is a no-op.
+        const completions = await client.query<{
           id: number;
           project_id: number;
           plan_id: number | null;
@@ -501,16 +539,18 @@ export function registerProjects(server: McpServer, db: Db): void {
           `SELECT id, project_id, plan_id, type, is_dod_verifier
              FROM work_items
             WHERE project_id = $1 AND status = 'completed'
-            ORDER BY completed_at DESC NULLS LAST, id DESC
-            LIMIT 1`,
+            ORDER BY completed_at ASC NULLS LAST, id ASC`,
           [id],
         );
-        if ((recent.rowCount ?? 0) > 0) {
-          await advanceProjectAfterWorkCompletion(client, id, recent.rows[0]);
+        for (const row of completions.rows) {
+          await advanceProjectAfterWorkCompletion(client, id, row);
         }
 
         await client.query('COMMIT');
-        return ok(upd.rows[0]);
+        return ok({
+          project: updProj.rows[0],
+          cascade_unblocked_count: cascade.rowCount ?? 0,
+        });
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         return errorToToolResult(mapPgError(err as { code?: string; message?: string }));

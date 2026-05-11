@@ -27,6 +27,15 @@ function formatTime(d: Date): string {
   return d.toISOString().slice(11, 19); // HH:MM:SS from ISO
 }
 
+function formatAge(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  return `${days}d`;
+}
+
 function formatPretty(time: string, msg: string, ctx?: Record<string, unknown>): string {
   if (!ctx || Object.keys(ctx).length === 0) return `[${time}] ${msg}\n`;
   const pairs = Object.entries(ctx)
@@ -65,6 +74,18 @@ export function createLogger(deps: LoggerDeps): Logger {
       // Active tick — reset the streak and print.
       idleStreak = 0;
       deps.writeStdout(formatPretty(time, 'tick', ctx));
+      return;
+    }
+
+    if (msg === 'awaiting_input') {
+      const count = Number(ctx?.count ?? 0);
+      if (count === 0) return; // file already wrote it; suppress on stdout
+      const oldestMs = Number(ctx?.oldest_age_ms ?? 0);
+      const nagged = Number(ctx?.nagged ?? 0);
+      const oldest = formatAge(oldestMs);
+      deps.writeStdout(
+        `[${time}] ⚠ awaiting_input count=${count} oldest=${oldest} nagged=${nagged}\n`,
+      );
       return;
     }
 

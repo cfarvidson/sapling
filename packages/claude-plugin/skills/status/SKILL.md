@@ -38,7 +38,7 @@ Summarize the current state of the Sapling queue, grouped by app so the user can
 
 PROJECTS SCOPING <s> IN_PROGRESS <i> BLOCKED <b> DONE <d> CANCELLED <c> #<id> <status> <title> (linear: <url?>)
 …
-PENDING <p> CLAIMED <c> AWAITING <a> BLOCKED <b> FAILED <f>
+PENDING <p> CLAIMED <c> AWAITING <a> (oldest <oldest_age>) BLOCKED <b> FAILED <f>
 pending: #<id> <type> <title> (service=<service_id> plan=<plan_id> project=<project_id?> team=<team_name?>)
 … (next 5, ordered by priority desc / created asc)
 claimed: #<id> <type> <title> (service=<service_id> plan=<plan_id> project=<project_id?> team=<team_name?>) claimed_by=<claimed_by> @ <claimed_at>
@@ -52,10 +52,12 @@ reason: <failure_reason>
 
 ```
 
-Skip empty subsections (including the entire Projects header if no projects exist for that app) to keep the output dense. When a row's `team_name`, `plan_id`, or `project_id` is null, suppress that key entirely. If `awaiting_input` totals are non-zero anywhere, append `Run /sapling:human to answer.` to the footer.
+Skip empty subsections (including the entire Projects header if no projects exist for that app) to keep the output dense. If `awaiting_input` count > 0, compute `oldest_age` = the largest `now() - updated_at` across the awaiting_input rows for that app, formatted as `Nm` for < 60 minutes, `Nh` for < 48 hours, else `Nd`. Suppress the `(oldest …)` parenthetical entirely when the count is zero. When a row's `team_name`, `plan_id`, or `project_id` is null, suppress that key entirely. If `awaiting_input` totals are non-zero anywhere, append `Run /sapling:human to answer.` to the footer.
 
 5. After the per-app sections, print a one-line cross-app totals row:
 
    ```
-   TOTALS PROJECTS <P_total> PENDING <P> CLAIMED <C> AWAITING <A> BLOCKED <B> FAILED <F>
+   TOTALS PROJECTS <P_total> PENDING <P> CLAIMED <C> AWAITING <A> (oldest <A_oldest>) BLOCKED <B> FAILED <F>
    ```
+
+   `A_oldest` is the largest age across all awaiting_input rows in scope, formatted with the same `Nm` / `Nh` / `Nd` rule. Suppress the `(oldest …)` parenthetical entirely when `A == 0`.

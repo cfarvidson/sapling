@@ -7,6 +7,15 @@ export interface RunnerConfig {
   poll_interval_ms: number;
   claim_ttl_ms: number;
   max_claim_attempts: number;
+  ntfy_url: string | null;
+  awaiting_input_nag_age_ms: number;
+  awaiting_input_nag_repeat_ms: number;
+}
+
+export interface AwaitingInputItem {
+  id: number;
+  title: string;
+  updated_at: string; // ISO timestamp from the server
 }
 
 export interface WorkItem {
@@ -30,6 +39,7 @@ export interface McpClient {
   reapStuckClaims: (now?: string) => Promise<ReapedRow[]>;
   getRunnerConfig: () => Promise<RunnerConfig>;
   listPendingWork: () => Promise<WorkItem[]>;
+  listAwaitingInput: () => Promise<AwaitingInputItem[]>;
   close: () => Promise<void>;
 }
 
@@ -49,6 +59,8 @@ export function wrapMcpClient(client: Client): McpClient {
     reapStuckClaims: (now) => callJson<ReapedRow[]>('reap_stuck_claims', now ? { now } : {}),
     getRunnerConfig: () => callJson<RunnerConfig>('get_runner_config'),
     listPendingWork: () => callJson<WorkItem[]>('list_work', { status: 'pending' }),
+    listAwaitingInput: () =>
+      callJson<AwaitingInputItem[]>('list_work', { status: 'awaiting_input' }),
     close: () => client.close(),
   };
 }

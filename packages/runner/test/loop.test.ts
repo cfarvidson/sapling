@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tick } from '../src/loop.js';
 import type { SpawnedAgent, SpawnFn } from '../src/spawn.js';
 import { startTestDb, type TestDb } from './helpers/pg.js';
@@ -67,6 +67,9 @@ describe('runner loop tick', () => {
               poll_interval_ms = DEFAULT,
               claim_ttl_ms = DEFAULT,
               max_claim_attempts = DEFAULT,
+              ntfy_url = DEFAULT,
+              awaiting_input_nag_age_ms = DEFAULT,
+              awaiting_input_nag_repeat_ms = DEFAULT,
               updated_at = now()
         WHERE id = 1`,
     );
@@ -219,5 +222,62 @@ describe('runner loop tick', () => {
     const r = await tick({ mcp: fixture.mcp, spawn: stub.fn, env: {}, running });
     expect(r).toMatchObject({ reaped: 0, spawned: 0, pending: 0, running: 0 });
     expect(stub.calls).toHaveLength(0);
+  });
+
+  it('calls the notifier with awaiting_input items and returns awaiting_input count + nagged in TickResult', async () => {
+    const { rows } = await db.pool.query<{ id: number }>(
+      `INSERT INTO work_items(type, title, description_markdown, status, updated_at)
+       VALUES ('plan', 'paused thing', 'x', 'awaiting_input', now() - interval '2 hours')
+       RETURNING id`,
+    );
+    const id = rows[0].id;
+    await db.pool.query(
+      `UPDATE runner_config
+          SET ntfy_url = 'http://example.invalid/sapling',
+              awaiting_input_nag_age_ms = 60000,
+              awaiting_input_nag_repeat_ms = 300000
+        WHERE id = 1`,
+    );
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 } as Response);
+
+    const stub = makeStubSpawn();
+    const running = new Set<SpawnedAgent>();
+    const notifierState = new Map<number, Date>();
+    const r = await tick({
+      mcp: fixture.mcp,
+      spawn: stub.fn,
+      env: {},
+      running,
+      notifierState,
+      fetchImpl,
+    });
+
+    expect(r.awaiting_input).toBe(1);
+    expect(r.nagged).toBe(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(notifierState.get(id)).toBeDefined();
+  });
+
+  it('does not call fetch when ntfy_url is null', async () => {
+    await db.pool.query(
+      `INSERT INTO work_items(type, title, description_markdown, status, updated_at)
+       VALUES ('plan', 'p', 'x', 'awaiting_input', now() - interval '2 hours')`,
+    );
+    // ntfy_url defaults to NULL
+    const fetchImpl = vi.fn();
+    const stub = makeStubSpawn();
+    const running = new Set<SpawnedAgent>();
+    const notifierState = new Map<number, Date>();
+    const r = await tick({
+      mcp: fixture.mcp,
+      spawn: stub.fn,
+      env: {},
+      running,
+      notifierState,
+      fetchImpl,
+    });
+    expect(r.awaiting_input).toBe(1);
+    expect(r.nagged).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

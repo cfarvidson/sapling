@@ -44,7 +44,7 @@ Sapling is an AI-native dev workbench: a Postgres-backed knowledge store and typ
 - Multi-user; auth beyond an optional bearer token.
 - Mirroring or storing repo source code (real code stays in git).
 - Vector search / embeddings.
-- Webhooks, event bus, metrics export, outbound transports of any kind (discoverability is pull-based). Project-level Linear updates are emitted by agents through the Linear MCP they already have, not by the Sapling server — see [§ 12 Claude plugin](#12-claude-plugin).
+- Webhooks, event bus, metrics export. Discoverability is pull-based; opt-in operator-targeted notifications via the runner-side ntfy notifier are permitted as an attention mechanism for `awaiting_input` items, not as a general transport. Project-level Linear updates are emitted by agents through the Linear MCP they already have, not by the Sapling server — see [§ 12 Claude plugin](#12-claude-plugin).
 - Automated backups (the bind-mounted `./data/postgres` volume is the recovery surface).
 - A workflow engine. Sapling does not enforce role ordering or completion gates inside teams.
 - A retry framework. Failed items are not auto-retried; retry is an explicit caller decision (`retry_work` or a fresh `enqueue_work`).
@@ -54,21 +54,21 @@ Sapling is an AI-native dev workbench: a Postgres-backed knowledge store and typ
 Two services in `docker-compose.yml`. An optional third process (`sapling-runner`) lives in `packages/runner/` and is started with `make runner`.
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  docker-compose.yml                                          │
-│                                                              │
-│  ┌─────────────────────┐         ┌─────────────────────┐     │
-│  │ mcp-server          │ ──SQL──▶│ postgres:16-alpine  │     │
-│  │ (Node 22 + TS, ESM) │         │ volume ./data/pg    │     │
-│  │ Express :3333 /mcp  │         │ port 5432 (loopback)│     │
-│  └──────────┬──────────┘         └─────────────────────┘     │
-└─────────────┼────────────────────────────────────────────────┘
-              │
-              │ Streamable HTTP MCP (POST /mcp, SSE for tool stream)
-              │ optional Authorization: Bearer <MCP_TOKEN>
-              ▼
-   ┌─────────────────────┐         ┌────────────────────┐
-   │ Claude Code session │◀───────▶│ sapling-runner     │
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  docker-compose.yml                                                          │
+│                                                                              │
+│  ┌─────────────────────┐    ┌─────────────────────┐    ┌──────────────────┐  │
+│  │ mcp-server          │─SQL│ postgres:16-alpine  │    │ ntfy             │  │
+│  │ (Node 22 + TS, ESM) │ ─▶ │ volume ./data/pg    │    │ (loopback)       │  │
+│  │ Express :3333 /mcp  │    │ port 5432 (loopback)│    │ port 8080        │  │
+│  └──────────┬──────────┘    └─────────────────────┘    └─────────▲────────┘  │
+└─────────────┼──────────────────────────────────────────────────── │ ─────────┘
+              │                                                     │
+              │ Streamable HTTP MCP (POST /mcp, SSE for tool stream)│ POST
+              │ optional Authorization: Bearer <MCP_TOKEN>          │ (opt-in)
+              ▼                                                     │
+   ┌─────────────────────┐         ┌────────────────────┐           │
+   │ Claude Code session │◀───────▶│ sapling-runner     │───────────┘
    │ (lead or solo agent)│  spawns │ (polling daemon)   │
    └─────────────────────┘         └────────────────────┘
 ```
@@ -81,8 +81,9 @@ Two services in `docker-compose.yml`. An optional third process (`sapling-runner
 - **Bound to `127.0.0.1:3333`.** Not network-reachable. Postgres is bound to loopback as well.
 - **Optional bearer auth** via `MCP_TOKEN`. Off by default. Applied only to `/mcp`; `/health` is always open.
 - **Postgres** pinned to `postgres:16-alpine`; data persisted to `./data/postgres` (gitignored). Postgres 15+ syntax (`UNIQUE NULLS NOT DISTINCT`) is in use.
-- **No outbound transports.** Discoverability is pull-based (`/sapling:human`, `/sapling:status`).
+- **No outbound transports beyond the opt-in ntfy notifier.** General discoverability is pull-based (`/sapling:human`, `/sapling:status`).
 - **Atomic claim** via `FOR UPDATE SKIP LOCKED`. Race losers get `null`, treated as "queue empty," not an error.
+- **Self-hosted ntfy** as a third compose service (loopback by default). The runner POSTs to it on stale `awaiting_input` items when `runner_config.ntfy_url` is set. Operator chooses an exposure path (Tailscale recommended, LAN, or Cloudflare Tunnel) — see README.
 
 ## 4. Repo layout
 
@@ -138,16 +139,17 @@ sapling/
 
 Authoritative source: `packages/mcp-server/src/schema/*.sql`. The migrations applied so far are:
 
-| File                            | Effect                                                                                                                           |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `001_init.sql`                  | Initial schema: `apps`, `services`, `plans`, `work_items`, `artifacts`, `_migrations`; enums.                                    |
-| `002_app_conventions.sql`       | Adds `apps.conventions TEXT`.                                                                                                    |
-| `003_work_blocked.sql`          | Adds `'blocked'` to the `work_status` enum.                                                                                      |
-| `004_runner_groundwork.sql`     | Adds `attempt_count`, `next_retry_at`, `claim_expires_at` to `work_items`; creates `runner_config`.                              |
-| `005_awaiting_input_status.sql` | Adds `'awaiting_input'` to the `work_status` enum.                                                                               |
-| `006_teams.sql`                 | Creates `teams`, `team_roles`, `team_defaults`; adds `work_items.team_id`.                                                       |
-| `007_projects.sql`              | Creates `projects`, `project_status` enum, `project_id` FKs on `plans` and `work_items`, `is_dod_verifier` flag on `work_items`. |
-| `008_depends_on_work_id.sql`    | Adds `work_items.depends_on_work_id` (self-FK, `ON DELETE SET NULL`) and a partial index.                                        |
+| File                            | Effect                                                                                                                                                                           |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `001_init.sql`                  | Initial schema: `apps`, `services`, `plans`, `work_items`, `artifacts`, `_migrations`; enums.                                                                                    |
+| `002_app_conventions.sql`       | Adds `apps.conventions TEXT`.                                                                                                                                                    |
+| `003_work_blocked.sql`          | Adds `'blocked'` to the `work_status` enum.                                                                                                                                      |
+| `004_runner_groundwork.sql`     | Adds `attempt_count`, `next_retry_at`, `claim_expires_at` to `work_items`; creates `runner_config`.                                                                              |
+| `005_awaiting_input_status.sql` | Adds `'awaiting_input'` to the `work_status` enum.                                                                                                                               |
+| `006_teams.sql`                 | Creates `teams`, `team_roles`, `team_defaults`; adds `work_items.team_id`.                                                                                                       |
+| `007_projects.sql`              | Creates `projects`, `project_status` enum, `project_id` FKs on `plans` and `work_items`, `is_dod_verifier` flag on `work_items`.                                                 |
+| `008_depends_on_work_id.sql`    | Adds `work_items.depends_on_work_id` (self-FK, `ON DELETE SET NULL`) and a partial index.                                                                                        |
+| `010_runner_ntfy_config.sql`    | Adds `ntfy_url` (TEXT, nullable), `awaiting_input_nag_age_ms` (INT NOT NULL DEFAULT 3600000), `awaiting_input_nag_repeat_ms` (INT NOT NULL DEFAULT 21600000) to `runner_config`. |
 
 ### Tables
 
@@ -278,10 +280,10 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 
 ### Runner config (`tools/runner_config.ts`) — 2 tools
 
-| Tool                                                                                                               | Purpose                        |
-| ------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
-| `get_runner_config()`                                                                                              | Read the singleton config row. |
-| `update_runner_config({ agent_command?, max_concurrent?, poll_interval_ms?, claim_ttl_ms?, max_claim_attempts? })` | Partial upsert.                |
+| Tool                                                                                                                                                                                     | Purpose                                                             |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `get_runner_config()`                                                                                                                                                                    | Read the singleton config row.                                      |
+| `update_runner_config({ agent_command?, max_concurrent?, poll_interval_ms?, claim_ttl_ms?, max_claim_attempts?, ntfy_url?, awaiting_input_nag_age_ms?, awaiting_input_nag_repeat_ms? })` | Partial upsert. `ntfy_url` accepts `null` to disable notifications. |
 
 ### Human-in-the-loop (`tools/human_input.ts`) — 2 tools
 
@@ -309,17 +311,21 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 
 ### Projects (`tools/projects.ts`) — 9 tools
 
-| Tool                                                                                                | Purpose                                                                                                                                                                                                                                                                                                                                                                          |
-| --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create_project(app_name, title, description_md, definition_of_done_md, linear_url?, service_ids?)` | Atomic. Validates each `service_id` belongs to `app_name`. If `service_ids` provided → status starts at `in_progress`, fans out one `plan` work item per service. Otherwise → status starts at `scoping`, auto-enqueues one `plan`-type scoping work item titled "Scope project N: <title>" with `project_id` set. Returns the created project plus any auto-enqueued work item. |
-| `complete_scoping(project_id, service_ids[])`                                                       | Atomic. Called by the scoping agent after writing its `scoping` artifact. Validates project status is `scoping`. Validates each `service_id` belongs to the project's app. Enqueues one `plan` work item per service with `project_id` set. Flips project to `in_progress`.                                                                                                      |
-| `get_project(id)`                                                                                   | Returns the project plus rolled-up child counts: `{ project, plan_count, work_counts: { pending, claimed, completed, ... }, scoping_artifact_id?, dod_verifier_id? }`.                                                                                                                                                                                                           |
-| `list_projects(app_name?, status?)`                                                                 | Filtered list. Titles + counts only; no description or DoD bodies.                                                                                                                                                                                                                                                                                                               |
-| `update_project(id, title?, description_md?, definition_of_done_md?, linear_url?)`                  | Patch. `status` and `app_id` are not patchable — status changes go through lifecycle tools.                                                                                                                                                                                                                                                                                      |
-| `cancel_project(id, reason?)`                                                                       | Atomic + cascading. Sets project `cancelled`. Cascades `cancel_work` to all non-terminal child work items. Idempotent on already-cancelled.                                                                                                                                                                                                                                      |
-| `block_project(id, reason)`                                                                         | Sets project `blocked` from `scoping` / `in_progress`. Does not cascade. Auto-enqueue triggers paused while blocked. `failure_reason` records the reason.                                                                                                                                                                                                                        |
-| `unblock_project(id)`                                                                               | Recomputes status (`scoping` if a scoping child is in-flight, else `in_progress`). Replays missed auto-enqueue triggers.                                                                                                                                                                                                                                                         |
-| `retry_project(id)`                                                                                 | For a project that hit `done` but isn't actually done. Status → `in_progress`, existing DoD verifier `retry_work`-ed.                                                                                                                                                                                                                                                            |
+| Tool                                                                                                | Purpose                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create_project(app_name, title, description_md, definition_of_done_md, linear_url?, service_ids?)` | Atomic. Validates each `service_id` belongs to `app_name`. If `service_ids` provided → status starts at `in_progress`, fans out one `plan` work item per service. Otherwise → status starts at `scoping`, auto-enqueues one `plan`-type scoping work item titled "Scope project N: <title>" with `project_id` set. Returns the created project plus any auto-enqueued work item.                    |
+| `complete_scoping(project_id, service_ids[])`                                                       | Atomic. Called by the scoping agent after writing its `scoping` artifact. Validates project status is `scoping`. Validates each `service_id` belongs to the project's app. Enqueues one `plan` work item per service with `project_id` set. Flips project to `in_progress`.                                                                                                                         |
+| `get_project(id)`                                                                                   | Returns the project plus rolled-up child counts: `{ project, plan_count, work_counts: { pending, claimed, completed, ... }, scoping_artifact_id?, dod_verifier_id? }`.                                                                                                                                                                                                                              |
+| `list_projects(app_name?, status?)`                                                                 | Filtered list. Titles + counts only; no description or DoD bodies.                                                                                                                                                                                                                                                                                                                                  |
+| `update_project(id, title?, description_md?, definition_of_done_md?, linear_url?)`                  | Patch. `status` and `app_id` are not patchable — status changes go through lifecycle tools.                                                                                                                                                                                                                                                                                                         |
+| `cancel_project(id, reason?)`                                                                       | Atomic + cascading. Sets project `cancelled`. Cascades `cancel_work` to all non-terminal child work items. Idempotent on already-cancelled.                                                                                                                                                                                                                                                         |
+| `block_project(id, reason)`                                                                         | Sets project `blocked` from `scoping` / `in_progress`. **Cascades**: child work items in `pending` or `awaiting_input` are flipped to `blocked` with `failure_reason = 'project blocked: <reason>'` (the reserved prefix marks cascade-blocked rows). `claimed` children are not touched — Sapling cannot kill the agent process. Returns `{ project, cascade_blocked_count }`.                     |
+| `unblock_project(id)`                                                                               | Recomputes status (`scoping` if a scoping child is in-flight, else `in_progress`). **Cascade-unblocks** children whose `failure_reason` starts with the reserved prefix `'project blocked: '`. Replays `advanceProjectAfterWorkCompletion` for **every** completed non-verifier child in `completed_at` order (helper guards make this idempotent). Returns `{ project, cascade_unblocked_count }`. |
+| `retry_project(id)`                                                                                 | For a project that hit `done` but isn't actually done. Status → `in_progress`, existing DoD verifier `retry_work`-ed.                                                                                                                                                                                                                                                                               |
+
+> The `'project blocked: '` prefix on `failure_reason` is reserved. Operators must not use it in `block_work` reason text, or the row will be swept by `unblock_project`'s cascade-unblock.
+
+> **`awaiting_input` semantics through the cascade (v1):** when `block_project` cascades an `awaiting_input` child to `blocked`, the original `pending_questions` artifact is preserved on the row but the runtime `awaiting_input` state is lost. On `unblock_project` the row returns to `pending`, not back to `awaiting_input` — the next agent that claims it will not see it as "paused waiting for an answer." This is an accepted v1 simplification (no `was_status` marker); operators who rely on the question being re-surfaced should `request_human_input` again after unblocking.
 
 ## 8. Work-item lifecycle
 
@@ -438,6 +444,11 @@ scoping ── complete_scoping ────────────────
                                                           (writes dod_gaps artifact)
 
    block_project   ──> blocked  ── unblock_project ──> (recomputed prior state)
+                          │                           + cascade-unblock children
+                          │                           + replay all completions
+                          │  cascades to pending +
+                          │  awaiting_input children
+                          │  (claimed left alone)
    cancel_project  ──> cancelled  (cascades cancel_work to non-terminal children)
 ```
 
@@ -551,9 +562,17 @@ When `/sapling:work` claims an item with `team_id`:
      child = bash -lc <cfg.agent_command>
      running.add(child); on exit: running.delete(child)
 7. emit { reaped, spawned, pending, running }
+8. if cfg.ntfy_url is set:
+     awaiting = await mcp.listAwaitingInput()
+     for each item with age >= awaiting_input_nag_age_ms
+         and not nagged within awaiting_input_nag_repeat_ms:
+       POST to cfg.ntfy_url; record lastNotifiedAt[id]
+     log 'awaiting_input' { count, oldest_age_ms, nagged }
 ```
 
 Each spawned agent self-claims via `claim_next_work`. The runner does not pre-allocate items to processes; if `pending` shrinks before the spawned agent calls `claim_next_work`, the agent simply gets `null` and exits.
+
+The notifier's per-item last-notified state is in-memory only — a runner restart re-nags each still-stale item once. Acceptable for v1; can be promoted to a `work_items.notified_at` column later if double-pings become noisy.
 
 ### CLI flags
 
@@ -575,10 +594,15 @@ Each spawned agent self-claims via `claim_next_work`. The runner does not pre-al
 - `poll_interval_ms` — read **once at startup** to arm the polling timer; restart required to apply.
 - `claim_ttl_ms` — used by the reaper. Defaults to `7200000` (2 h).
 - `max_claim_attempts` — defaults to `5`.
+- `ntfy_url` — optional ntfy topic URL for `awaiting_input` notifications. `NULL` disables notifications.
+- `awaiting_input_nag_age_ms` — minimum age before an `awaiting_input` item is nagged. Defaults to `3600000` (1 h).
+- `awaiting_input_nag_repeat_ms` — minimum interval between repeat nags for the same item. Defaults to `21600000` (6 h).
 
 ### Logging
 
 The runner writes every event as a JSON line to the file at `SAPLING_RUNNER_LOG_FILE` (default `./data/runner.log`; empty string disables). The parent directory is created on demand. Stdout is filtered for human reading: `start`, `spawned`, `reaped`, `tick_error`, `shutdown`, `max_spawn_reached`, and `done` always print; idle ticks (`reaped == 0 && spawned == 0`) are suppressed; an `alive — running=N pending=N` heartbeat prints every 20th idle tick.
+
+When a tick reports `awaiting_input` count > 0, the runner emits an `awaiting_input` event line on stdout (formatted as `⚠ awaiting_input count=N oldest=Xh nagged=N`) regardless of idle status. The event is also written to the JSON file log.
 
 ### Shutdown
 
@@ -626,6 +650,9 @@ Marketplace entry lives at `.claude-plugin/marketplace.json` and is installed vi
 | `poll_interval_ms`                                                      | `runner_config` table    | `30000`                                                     | Read once at startup; restart required.                  |
 | `claim_ttl_ms`                                                          | `runner_config` table    | `7200000` (2 h)                                             | Used by `reap_stuck_claims`.                             |
 | `max_claim_attempts`                                                    | `runner_config` table    | `5`                                                         | After this many reaps the item moves to `failed`.        |
+| `ntfy_url`                                                              | `runner_config` table    | `NULL`                                                      | ntfy topic URL for `awaiting_input` notifications.       |
+| `awaiting_input_nag_age_ms`                                             | `runner_config` table    | `3600000` (1 h)                                             | Minimum age before nagging.                              |
+| `awaiting_input_nag_repeat_ms`                                          | `runner_config` table    | `21600000` (6 h)                                            | Minimum interval between repeat nags.                    |
 
 ## 14. Error handling, logging, observability
 

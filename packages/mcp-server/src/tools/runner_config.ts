@@ -28,13 +28,16 @@ export function registerRunnerConfig(server: McpServer, db: Db): void {
     'update_runner_config',
     {
       description:
-        'Patch the singleton runner_config row. Only specified fields are updated; integer fields must be > 0.',
+        'Patch the singleton runner_config row. Only specified fields are updated; integer fields must be > 0. ntfy_url accepts null to disable notifications.',
       inputSchema: {
         agent_command: z.string().min(1).optional(),
         max_concurrent: PositiveInt.optional(),
         poll_interval_ms: PositiveInt.optional(),
         claim_ttl_ms: PositiveInt.optional(),
         max_claim_attempts: PositiveInt.optional(),
+        ntfy_url: z.string().min(1).nullable().optional(),
+        awaiting_input_nag_age_ms: PositiveInt.optional(),
+        awaiting_input_nag_repeat_ms: PositiveInt.optional(),
       },
     },
     async (input) => {
@@ -46,6 +49,9 @@ export function registerRunnerConfig(server: McpServer, db: Db): void {
         'poll_interval_ms',
         'claim_ttl_ms',
         'max_claim_attempts',
+        'ntfy_url',
+        'awaiting_input_nag_age_ms',
+        'awaiting_input_nag_repeat_ms',
       ];
       for (const k of fields) {
         const v = input[k];

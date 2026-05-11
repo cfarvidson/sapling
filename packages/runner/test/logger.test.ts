@@ -108,6 +108,25 @@ describe('createLogger', () => {
     expect(cap.stdout[0]).toMatch(/^\[06:00:00\] spawned pid=42\n?$/);
   });
 
+  it('surfaces awaiting_input events to stdout when count > 0', () => {
+    const { deps, cap } = makeDeps();
+    const log = createLogger(deps);
+    log('awaiting_input', { count: 3, oldest_age_ms: 4 * 60 * 60 * 1000, nagged: 1 });
+    expect(cap.stdout).toHaveLength(1);
+    expect(cap.stdout[0]).toContain('awaiting_input');
+    expect(cap.stdout[0]).toContain('count=3');
+    expect(cap.stdout[0]).toContain('oldest=4h');
+  });
+
+  it('skips awaiting_input on stdout when count is 0', () => {
+    const { deps, cap } = makeDeps();
+    const log = createLogger(deps);
+    log('awaiting_input', { count: 0, oldest_age_ms: 0, nagged: 0 });
+    expect(cap.stdout).toHaveLength(0);
+    // file still gets it for completeness.
+    expect(cap.file).toHaveLength(1);
+  });
+
   it('omits file writes when fileStream is null', () => {
     const { deps, cap } = makeDeps({ fileStream: null });
     const log = createLogger(deps);

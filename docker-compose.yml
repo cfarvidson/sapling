@@ -32,3 +32,20 @@ services:
       MCP_TOKEN: ${MCP_TOKEN:-}
     ports:
       - '127.0.0.1:3333:3333'
+
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    command: serve
+    restart: unless-stopped
+    environment:
+      TZ: UTC
+      NTFY_BASE_URL: http://localhost:8080
+      NTFY_CACHE_FILE: /var/cache/ntfy/cache.db
+      NTFY_AUTH_FILE: /var/lib/ntfy/user.db
+      NTFY_BEHIND_PROXY: 'false'
+      NTFY_LISTEN_HTTP: ':80'
+    ports:
+      - '127.0.0.1:8080:80'
+    volumes:
+      - ./data/ntfy/cache:/var/cache/ntfy
+      - ./data/ntfy/lib:/var/lib/ntfy
