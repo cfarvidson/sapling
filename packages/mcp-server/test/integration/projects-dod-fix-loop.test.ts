@@ -154,4 +154,54 @@ describe('projects — DoD fix loop', () => {
     );
     expect(w.rows[0].status).toBe('pending');
   });
+
+  it('cap reached: two consecutive failed verifiers with cap=2 blocks the project', async () => {
+    await db.pool.query(`UPDATE runner_config SET max_dod_fix_cycles = 2 WHERE id = 1`);
+    const { projectId, serviceId, verifierId } = await seedProjectWithVerifier();
+
+    const fix1 = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 'fix1',
+      description_markdown: 'd',
+      service_id: serviceId,
+      project_id: projectId,
+    })) as { id: number };
+
+    await client.call('complete_work', { id: verifierId, dod_verified: false });
+    await client.call('complete_work', { id: fix1.id });
+
+    const v2 = await db.pool.query<{ id: number }>(
+      `SELECT id FROM work_items
+         WHERE project_id=$1 AND is_dod_verifier=true AND status='pending'`,
+      [projectId],
+    );
+    expect(v2.rowCount).toBe(1);
+
+    await client.call('complete_work', { id: v2.rows[0].id, dod_verified: false });
+
+    const proj = await db.pool.query<{
+      status: string;
+      dod_cycle_count: number;
+      failure_reason: string | null;
+    }>(`SELECT status, dod_cycle_count, failure_reason FROM projects WHERE id=$1`, [projectId]);
+    expect(proj.rows[0].status).toBe('blocked');
+    expect(proj.rows[0].dod_cycle_count).toBe(2);
+    expect(proj.rows[0].failure_reason).toBe('DoD not verified after 2 cycles');
+
+    const fix2 = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 'fix2',
+      description_markdown: 'd',
+      service_id: serviceId,
+      project_id: projectId,
+    })) as { id: number };
+    await client.call('complete_work', { id: fix2.id });
+
+    const verifiers = await db.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM work_items
+         WHERE project_id=$1 AND is_dod_verifier=true`,
+      [projectId],
+    );
+    expect(verifiers.rows[0].n).toBe(2);
+  });
 });
