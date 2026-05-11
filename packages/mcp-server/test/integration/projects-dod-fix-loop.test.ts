@@ -103,4 +103,26 @@ describe('projects — DoD fix loop', () => {
     expect(verifiers.rowCount).toBe(2);
     expect(verifiers.rows[1].status).toBe('pending');
   });
+
+  it('happy path: dod_verified=true flips project to done, counter stays at 0', async () => {
+    const { projectId, verifierId } = await seedProjectWithVerifier();
+    await client.call('complete_work', { id: verifierId, dod_verified: true });
+    const proj = await db.pool.query<{ status: string; dod_cycle_count: number }>(
+      `SELECT status, dod_cycle_count FROM projects WHERE id=$1`,
+      [projectId],
+    );
+    expect(proj.rows[0].status).toBe('done');
+    expect(proj.rows[0].dod_cycle_count).toBe(0);
+  });
+
+  it('backwards compat: omitting dod_verified on a verifier defaults to verified=true', async () => {
+    const { projectId, verifierId } = await seedProjectWithVerifier();
+    await client.call('complete_work', { id: verifierId });
+    const proj = await db.pool.query<{ status: string; dod_cycle_count: number }>(
+      `SELECT status, dod_cycle_count FROM projects WHERE id=$1`,
+      [projectId],
+    );
+    expect(proj.rows[0].status).toBe('done');
+    expect(proj.rows[0].dod_cycle_count).toBe(0);
+  });
 });
