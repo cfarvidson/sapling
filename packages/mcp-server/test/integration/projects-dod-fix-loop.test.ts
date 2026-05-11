@@ -148,10 +148,9 @@ describe('projects — DoD fix loop', () => {
     expect(raw.isError).toBe(true);
     expect(JSON.parse(raw.content[0].text).error.code).toBe('invalid_input');
 
-    const w = await db.pool.query<{ status: string }>(
-      `SELECT status FROM work_items WHERE id=$1`,
-      [code.id],
-    );
+    const w = await db.pool.query<{ status: string }>(`SELECT status FROM work_items WHERE id=$1`, [
+      code.id,
+    ]);
     expect(w.rows[0].status).toBe('pending');
   });
 
