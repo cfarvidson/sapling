@@ -52,7 +52,7 @@ If you'd rather wire the MCP server up by hand instead of installing the plugin,
 make up      # start (postgres + mcp-server)
 make down    # stop (preserves data)
 make logs    # tail mcp-server logs
-make psql    # open a psql shell against the running container
+make psql    # open a psql shell against the running container (also accepts piped SQL via stdin)
 make test    # run the test suite (vitest + testcontainers)
 make nuke    # stop AND drop data volume + ./data/postgres (5s confirmation)
 ```

@@ -10,7 +10,7 @@ logs:
 	docker compose logs -f mcp-server
 
 psql:
-	docker compose exec postgres psql -U $${POSTGRES_USER:-sapling} -d $${POSTGRES_DB:-sapling}
+	docker compose exec -T postgres psql -U $${POSTGRES_USER:-sapling} -d $${POSTGRES_DB:-sapling}
 
 build:
 	docker compose build
