@@ -65,8 +65,9 @@ When a row's `team_name` is null (solo agent), suppress the `team=` key — show
 - `mcp__sapling__get_project({ id })` for the project itself + rolled-up counts.
 - `mcp__sapling__list_work({ })` filtered client-side to rows where `project_id == id`. (There is no server-side project filter on `list_work` yet; client-side filtering is fine until volumes warrant it.)
 - `mcp__sapling__list_plans({ })` filtered client-side to rows where `project_id == id`.
+- `mcp__sapling__get_runner_config({})` in parallel — read `max_dod_fix_cycles` for the header.
 - Print, in order:
-  - Project header: title, status, app, `linear_url?`.
+  - Project header: title, status, app, `linear_url?`, `dod_cycle_count` / `max_dod_fix_cycles` (suppress when count is 0; render `<count>/<cap> ⚠ last round` when count == cap - 1).
   - Definition of Done verbatim (fenced).
   - Rolled-up `work_counts` from `get_project`.
   - **Scoping artifact** body if `scoping_artifact_id` is non-null (fetched via `get_artifact`), fenced.
