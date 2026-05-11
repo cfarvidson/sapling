@@ -746,10 +746,18 @@ export async function advanceProjectAfterWorkCompletion(
        VALUES ('review', $1, $2, $3, true)`,
       [
         `Verify Definition of Done for project ${projectId}: ${proj.rows[0].title}`,
-        `All non-verifier work items are completed. Verify each criterion in the DoD against shipped reality (PRs, tests, code).\n\n` +
+        `All non-verifier work items are completed. Verify each DoD criterion against shipped reality (PRs, tests, code).\n\n` +
           `Definition of Done:\n\n${proj.rows[0].definition_of_done_md}\n\n` +
-          `On success: complete_work normally → project flips to 'done'.\n` +
-          `On failure: attach a 'dod_gaps' artifact listing what is missing AND complete_work — the project will stay in_progress and a human can enqueue more work + retry_project.`,
+          `If the DoD is fully satisfied:\n` +
+          `  → complete_work({ id: <this>, dod_verified: true })\n` +
+          `  → project flips to 'done'.\n\n` +
+          `If there are gaps:\n` +
+          `  1. For EACH gap, call enqueue_work with: type='code', project_id=<this project>, plan_id=NULL, ` +
+          `title=<short, imperative>, description_markdown=<what's missing, how to verify, which service>.\n` +
+          `  2. Optionally attach a 'dod_gaps' artifact summarizing the round.\n` +
+          `  3. complete_work({ id: <this>, dod_verified: false })\n` +
+          `     → cycle counter bumps; a fresh verifier auto-arms once fixes complete, ` +
+          `unless max_dod_fix_cycles is hit, in which case the project is auto-blocked.`,
         projectId,
       ],
     );
