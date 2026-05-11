@@ -1,0 +1,5 @@
+ALTER TABLE projects
+  ADD COLUMN IF NOT EXISTS dod_cycle_count INT NOT NULL DEFAULT 0;
+
+ALTER TABLE runner_config
+  ADD COLUMN IF NOT EXISTS max_dod_fix_cycles INT NOT NULL DEFAULT 3;

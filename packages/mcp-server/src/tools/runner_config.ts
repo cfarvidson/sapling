@@ -42,6 +42,7 @@ export function registerRunnerConfig(server: McpServer, db: Db): void {
         awaiting_input_nag_repeat_ms: PositiveInt.optional(),
         github_token: z.string().min(1).nullable().optional(),
         github_default_visibility: z.enum(['all', 'public', 'private']).optional(),
+        max_dod_fix_cycles: PositiveInt.optional(),
       },
     },
     async (input) => {
@@ -58,6 +59,7 @@ export function registerRunnerConfig(server: McpServer, db: Db): void {
         'awaiting_input_nag_repeat_ms',
         'github_token',
         'github_default_visibility',
+        'max_dod_fix_cycles',
       ];
       for (const k of fields) {
         const v = input[k];

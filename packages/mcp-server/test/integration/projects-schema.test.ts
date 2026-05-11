@@ -40,6 +40,7 @@ describe('projects schema (migration 007)', () => {
       'failure_reason',
       'created_at',
       'updated_at',
+      'dod_cycle_count',
     ]);
     expect(cols.rows.find((r) => r.column_name === 'app_id')?.is_nullable).toBe('NO');
     expect(cols.rows.find((r) => r.column_name === 'linear_url')?.is_nullable).toBe('YES');

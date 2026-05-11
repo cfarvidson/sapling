@@ -336,7 +336,7 @@ export function registerProjects(server: McpServer, db: Db): void {
       const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
       const { rows } = await db.query(
         `SELECT p.id, p.title, p.status, p.app_id, a.name AS app_name,
-                p.linear_url, p.created_at, p.updated_at
+                p.linear_url, p.dod_cycle_count, p.created_at, p.updated_at
            FROM projects p
            JOIN apps a ON a.id = p.app_id
            ${where}
@@ -508,10 +508,11 @@ export function registerProjects(server: McpServer, db: Db): void {
       const client = await db.connect();
       try {
         await client.query('BEGIN');
-        const proj = await client.query<{ id: number; status: string }>(
-          `SELECT id, status FROM projects WHERE id=$1 FOR UPDATE`,
-          [id],
-        );
+        const proj = await client.query<{
+          id: number;
+          status: string;
+          failure_reason: string | null;
+        }>(`SELECT id, status, failure_reason FROM projects WHERE id=$1 FOR UPDATE`, [id]);
         if (proj.rowCount === 0) {
           await client.query('ROLLBACK');
           return errorToToolResult(new AppError('not_found', `project ${id} not found`));
@@ -536,6 +537,16 @@ export function registerProjects(server: McpServer, db: Db): void {
           [id, target],
         );
 
+        const wasCapBlocked =
+          proj.rows[0].failure_reason !== null &&
+          /^DoD not verified after \d+ cycles$/.test(proj.rows[0].failure_reason);
+        if (wasCapBlocked) {
+          await client.query(
+            `UPDATE projects SET dod_cycle_count = 0, updated_at = now() WHERE id = $1`,
+            [id],
+          );
+        }
+
         // Cascade-unblock children carrying the reserved marker prefix.
         const cascade = await client.query(
           `UPDATE work_items
@@ -548,9 +559,11 @@ export function registerProjects(server: McpServer, db: Db): void {
           [id],
         );
 
-        // Replay every completion that happened during the blocked window, in chronological order.
-        // The helper's per-plan-review and DoD-verifier branches are gated on "no existing review/verifier",
-        // so replaying triggers that already fired is a no-op.
+        // Replay non-verifier completions to re-fire auto-enqueue triggers (per-plan reviews,
+        // fresh DoD verifier) that may have been skipped while the project was blocked. We skip
+        // verifier completions because their effect (project→done, or counter bump + cap-block)
+        // was applied at complete_work time; replaying them now under a dod_verified=undefined
+        // row would incorrectly flip the project back to 'done'.
         const completions = await client.query<{
           id: number;
           project_id: number;
@@ -560,7 +573,7 @@ export function registerProjects(server: McpServer, db: Db): void {
         }>(
           `SELECT id, project_id, plan_id, type, is_dod_verifier
              FROM work_items
-            WHERE project_id = $1 AND status = 'completed'
+            WHERE project_id = $1 AND status = 'completed' AND is_dod_verifier = false
             ORDER BY completed_at ASC NULLS LAST, id ASC`,
           [id],
         );
@@ -648,6 +661,7 @@ export interface CompletedWork {
   plan_id: number | null;
   type: 'plan' | 'code' | 'review';
   is_dod_verifier: boolean;
+  dod_verified?: boolean;
 }
 
 export async function advanceProjectAfterWorkCompletion(
@@ -668,9 +682,35 @@ export async function advanceProjectAfterWorkCompletion(
   if (status !== 'scoping' && status !== 'in_progress') return;
 
   if (completed.is_dod_verifier) {
-    await client.query(`UPDATE projects SET status='done', updated_at=now() WHERE id=$1`, [
-      projectId,
-    ]);
+    if (completed.dod_verified !== false) {
+      await client.query(`UPDATE projects SET status='done', updated_at=now() WHERE id=$1`, [
+        projectId,
+      ]);
+      return;
+    }
+    const cfg = await client.query<{ max_dod_fix_cycles: number }>(
+      `SELECT max_dod_fix_cycles FROM runner_config WHERE id = 1`,
+    );
+    const cap = cfg.rows[0].max_dod_fix_cycles;
+    const bumped = await client.query<{ dod_cycle_count: number }>(
+      `UPDATE projects
+          SET dod_cycle_count = dod_cycle_count + 1,
+              updated_at = now()
+        WHERE id = $1
+        RETURNING dod_cycle_count`,
+      [projectId],
+    );
+    const newCount = bumped.rows[0].dod_cycle_count;
+    if (newCount >= cap) {
+      await client.query(
+        `UPDATE projects
+            SET status = 'blocked',
+                failure_reason = $2,
+                updated_at = now()
+          WHERE id = $1`,
+        [projectId, `DoD not verified after ${newCount} cycles`],
+      );
+    }
     return;
   }
 
@@ -706,21 +746,31 @@ export async function advanceProjectAfterWorkCompletion(
        WHERE project_id=$1 AND is_dod_verifier=false AND status <> 'completed'`,
     [projectId],
   );
-  const verifierExists = await client.query<{ n: number }>(
+  const nonTerminalVerifier = await client.query<{ n: number }>(
     `SELECT count(*)::int AS n FROM work_items
-       WHERE project_id=$1 AND is_dod_verifier=true`,
+       WHERE project_id=$1
+         AND is_dod_verifier=true
+         AND status IN ('pending','claimed','awaiting_input','blocked')`,
     [projectId],
   );
-  if (remainingNonVerifier.rows[0].n === 0 && verifierExists.rows[0].n === 0) {
+  if (remainingNonVerifier.rows[0].n === 0 && nonTerminalVerifier.rows[0].n === 0) {
     await client.query(
       `INSERT INTO work_items(type, title, description_markdown, project_id, is_dod_verifier)
        VALUES ('review', $1, $2, $3, true)`,
       [
         `Verify Definition of Done for project ${projectId}: ${proj.rows[0].title}`,
-        `All non-verifier work items are completed. Verify each criterion in the DoD against shipped reality (PRs, tests, code).\n\n` +
+        `All non-verifier work items are completed. Verify each DoD criterion against shipped reality (PRs, tests, code).\n\n` +
           `Definition of Done:\n\n${proj.rows[0].definition_of_done_md}\n\n` +
-          `On success: complete_work normally → project flips to 'done'.\n` +
-          `On failure: attach a 'dod_gaps' artifact listing what is missing AND complete_work — the project will stay in_progress and a human can enqueue more work + retry_project.`,
+          `If the DoD is fully satisfied:\n` +
+          `  → complete_work({ id: <this>, dod_verified: true })\n` +
+          `  → project flips to 'done'.\n\n` +
+          `If there are gaps:\n` +
+          `  1. For EACH gap, call enqueue_work with: type='code', project_id=<this project>, plan_id=NULL, ` +
+          `title=<short, imperative>, description_markdown=<what's missing, how to verify, which service>.\n` +
+          `  2. Optionally attach a 'dod_gaps' artifact summarizing the round.\n` +
+          `  3. complete_work({ id: <this>, dod_verified: false })\n` +
+          `     → cycle counter bumps; a fresh verifier auto-arms once fixes complete, ` +
+          `unless max_dod_fix_cycles is hit, in which case the project is auto-blocked.`,
         projectId,
       ],
     );

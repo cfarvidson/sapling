@@ -242,14 +242,15 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
     'complete_work',
     {
       description:
-        'Mark a work item completed; optionally store a summary as an artifact, or link an existing artifact.',
+        'Mark a work item completed; optionally store a summary as an artifact, or link an existing artifact. For DoD verifier items, pass dod_verified=false to record that the DoD is not yet satisfied — the project will stay in_progress, dod_cycle_count bumps, and a fresh verifier auto-arms once the fix work runs. Omitted or true means verified.',
       inputSchema: {
         id: z.number().int().positive(),
         summary_markdown: z.string().optional(),
         artifact_id: z.number().int().positive().optional(),
+        dod_verified: z.boolean().optional(),
       },
     },
-    async ({ id, summary_markdown, artifact_id }) => {
+    async ({ id, summary_markdown, artifact_id, dod_verified }) => {
       try {
         const client = await db.connect();
         try {
@@ -270,6 +271,15 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
             return errorToToolResult(new AppError('not_found', `work ${id} not found`));
           }
           const work = upd.rows[0];
+          if (dod_verified !== undefined && work.is_dod_verifier !== true) {
+            await client.query('ROLLBACK');
+            return errorToToolResult(
+              new AppError(
+                'invalid_input',
+                `dod_verified is only valid on DoD verifier work items (work ${id} is not a verifier)`,
+              ),
+            );
+          }
           if (summary_markdown) {
             await client.query(
               `INSERT INTO artifacts(kind, title, body_markdown, work_item_id)
@@ -290,6 +300,7 @@ export function registerWorkLifecycle(server: McpServer, db: Db): void {
               plan_id: work.plan_id,
               type: work.type,
               is_dod_verifier: work.is_dod_verifier === true,
+              dod_verified: work.is_dod_verifier === true ? (dod_verified ?? true) : undefined,
             });
           }
           await client.query('COMMIT');

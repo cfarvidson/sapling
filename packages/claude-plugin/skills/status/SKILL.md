@@ -28,7 +28,9 @@ Summarize the current state of the Sapling queue, grouped by app so the user can
 
    If the call returns a `not_found` error for the app, stop and tell the user the app isn't registered.
 
-3. **In parallel, call** `mcp__sapling__list_projects({ app_name? })`. Project rows include `id`, `title`, `status`, `app_name`, `linear_url`. Skip this call entirely (and skip rendering the Projects section) if it returns an empty array.
+3. **In parallel, call** `mcp__sapling__list_projects({ app_name? })`. Project rows include `id`, `title`, `status`, `app_name`, `linear_url`, `dod_cycle_count`. Skip this call entirely (and skip rendering the Projects section) if it returns an empty array.
+
+3a. **In parallel, call** `mcp__sapling__get_runner_config({})` — read `max_dod_fix_cycles` for rendering the DoD cycle counter on Projects rows. The `github_token` field is already redacted server-side.
 
 3b. **In parallel, call** `mcp__sapling__list_schedules({})`. If the result is non-empty, also gather the most recent failed run per schedule. The simplest pull pattern is: for each schedule whose `last_fired_at` is non-null AND older than its `next_run_at`, call `mcp__sapling__get_schedule({ id_or_name: id })` to fetch `last_run`. Skip schedules whose `last_run.status !== 'failed'`. Skip the entire schedule summary when `list_schedules` returned `[]`.
 
@@ -38,7 +40,8 @@ Summarize the current state of the Sapling queue, grouped by app so the user can
 
 ## <app-name>
 
-PROJECTS SCOPING <s> IN_PROGRESS <i> BLOCKED <b> DONE <d> CANCELLED <c> #<id> <status> <title> (linear: <url?>)
+PROJECTS SCOPING <s> IN_PROGRESS <i> BLOCKED <b> DONE <d> CANCELLED <c>
+#<id> <status> <title> (linear: <url?> dod_cycle=<dod_cycle_count>/<max_dod_fix_cycles>)
 …
 PENDING <p> CLAIMED <c> AWAITING <a> (oldest <oldest_age>) BLOCKED <b> FAILED <f>
 pending: #<id> <type> <title> (service=<service_id> plan=<plan_id> project=<project_id?> team=<team_name?>)
@@ -55,6 +58,8 @@ reason: <failure_reason>
 ```
 
 Skip empty subsections (including the entire Projects header if no projects exist for that app) to keep the output dense. If `awaiting_input` count > 0, compute `oldest_age` = the largest `now() - updated_at` across the awaiting_input rows for that app, formatted as `Nm` for < 60 minutes, `Nh` for < 48 hours, else `Nd`. Suppress the `(oldest …)` parenthetical entirely when the count is zero. When a row's `team_name`, `plan_id`, or `project_id` is null, suppress that key entirely. If `awaiting_input` totals are non-zero anywhere, append `Run /sapling:human to answer.` to the footer.
+
+When rendering each project row, suppress `dod_cycle=<n>/<cap>` entirely when `dod_cycle_count == 0`. When `dod_cycle_count == max_dod_fix_cycles - 1`, append a soft warning ` ⚠ last round` after the parenthetical so the user knows the next failed verification will cap-block the project.
 
 4b. **Schedules summary** (only if `list_schedules` returned ≥1 row). Output a single section above the totals row:
 
