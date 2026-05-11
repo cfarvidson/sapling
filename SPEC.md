@@ -48,6 +48,11 @@ Sapling is an AI-native dev workbench: a Postgres-backed knowledge store and typ
 - Automated backups (the bind-mounted `./data/postgres` volume is the recovery surface).
 - A workflow engine. Sapling does not enforce role ordering or completion gates inside teams.
 - A retry framework. Failed items are not auto-retried; retry is an explicit caller decision (`retry_work` or a fresh `enqueue_work`).
+- Catch-up runs for missed scheduler ticks. A disabled or backlogged schedule fires once on resume; missed ticks are silently dropped.
+- GitHub webhook listeners. Schedule discovery is pull-only at fire time.
+- GitHub App auth for schedules. Personal access token only.
+- Multi-org schedules; per-repo topic/language filters. One schedule = one source.
+- Notifications on schedule failure beyond `/sapling:status`. No ntfy push for scheduler failures.
 
 ## 3. Architecture
 
@@ -84,6 +89,7 @@ Two services in `docker-compose.yml`. An optional third process (`sapling-runner
 - **No outbound transports beyond the opt-in ntfy notifier.** General discoverability is pull-based (`/sapling:human`, `/sapling:status`).
 - **Atomic claim** via `FOR UPDATE SKIP LOCKED`. Race losers get `null`, treated as "queue empty," not an error.
 - **Self-hosted ntfy** as a third compose service (loopback by default). The runner POSTs to it on stale `awaiting_input` items when `runner_config.ntfy_url` is set. Operator chooses an exposure path (Tailscale recommended, LAN, or Cloudflare Tunnel) — see README.
+- **In-process scheduler.** A `setInterval` inside the same mcp-server process polls due `schedules` rows every `SCHEDULER_TICK_MS` (default 10000) and invokes `createProjectInTx` for each, recording outcomes in `schedule_runs`. No new container, no new daemon. GitHub-org schedules discover repos live via `@octokit/rest` at fire time.
 
 ## 4. Repo layout
 
@@ -150,6 +156,7 @@ Authoritative source: `packages/mcp-server/src/schema/*.sql`. The migrations app
 | `007_projects.sql`              | Creates `projects`, `project_status` enum, `project_id` FKs on `plans` and `work_items`, `is_dod_verifier` flag on `work_items`.                                                 |
 | `008_depends_on_work_id.sql`    | Adds `work_items.depends_on_work_id` (self-FK, `ON DELETE SET NULL`) and a partial index.                                                                                        |
 | `010_runner_ntfy_config.sql`    | Adds `ntfy_url` (TEXT, nullable), `awaiting_input_nag_age_ms` (INT NOT NULL DEFAULT 3600000), `awaiting_input_nag_repeat_ms` (INT NOT NULL DEFAULT 21600000) to `runner_config`. |
+| `011_schedules.sql`             | Creates `schedules`, `schedule_runs`; enums `schedule_source` / `schedule_overlap` / `schedule_run_status`. Adds `runner_config.github_token` (nullable) and `runner_config.github_default_visibility` (default `'all'`). |
 
 ### Tables
 
@@ -161,6 +168,8 @@ Authoritative source: `packages/mcp-server/src/schema/*.sql`. The migrations app
 - **`artifacts`** — markdown blobs (review notes, pending questions, answers, architecture summaries, drafts). Optional FKs to `work_item_id`, `plan_id`, `service_id` — all `ON DELETE SET NULL`. Free-form `kind TEXT`. Multiple artifacts of the same kind per parent are allowed.
 - **`teams` / `team_roles` / `team_defaults`** — see [§ Teams](#10-teams).
 - **`runner_config`** — singleton (`PRIMARY KEY DEFAULT 1 CHECK (id = 1)`). See [§ Configuration surface](#13-configuration-surface).
+- **`schedules`** — recurring intent. `(name)` globally unique. Carries `source_type` (`'app' | 'github_org'`), `app_id` (NOT NULL, `ON DELETE CASCADE`), optional `github_org`, `cron_expr`, `timezone`, `overlap_policy`, `title_template` (supports `{{date}}` and `{{iso_date}}`), `description_md`, `definition_of_done_md`, `enabled`, `last_fired_at`, `next_run_at`. CHECK enforces `(source_type='app' AND github_org IS NULL) OR (source_type='github_org' AND github_org IS NOT NULL)`.
+- **`schedule_runs`** — audit row per fire attempt. `schedule_id → schedules.id ON DELETE CASCADE`, `project_id → projects.id ON DELETE SET NULL`. Status is one of `'fired' | 'skipped_overlap' | 'failed'`.
 - **`_migrations`** — `(filename PRIMARY KEY, applied_at)`.
 
 ### Enums
@@ -228,7 +237,7 @@ All FKs are `ON DELETE SET NULL` except `services.app_id` (CASCADE) and intra-te
 
 ## 7. MCP tool surface
 
-**Total: 49 tools.** Authoritative source: `packages/mcp-server/src/tools/`. Tools are registered via `registerAllTools` in `tools/register.ts`. Every call is instrumented with structured `tool_call` log lines (`{ tool, durationMs, ok }`).
+**Total: 57 tools.** Authoritative source: `packages/mcp-server/src/tools/`. Tools are registered via `registerAllTools` in `tools/register.ts`. Every call is instrumented with structured `tool_call` log lines (`{ tool, durationMs, ok }`).
 
 All inputs validated with `zod`. All success responses are JSON in a `text` content block. Errors return `{ error: { code, message, issues? } }` with `isError: true` (see [§ Error handling](#14-error-handling-logging-observability)).
 
@@ -326,6 +335,18 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 > The `'project blocked: '` prefix on `failure_reason` is reserved. Operators must not use it in `block_work` reason text, or the row will be swept by `unblock_project`'s cascade-unblock.
 
 > **`awaiting_input` semantics through the cascade (v1):** when `block_project` cascades an `awaiting_input` child to `blocked`, the original `pending_questions` artifact is preserved on the row but the runtime `awaiting_input` state is lost. On `unblock_project` the row returns to `pending`, not back to `awaiting_input` — the next agent that claims it will not see it as "paused waiting for an answer." This is an accepted v1 simplification (no `was_status` marker); operators who rely on the question being re-surfaced should `request_human_input` again after unblocking.
+
+### Schedules (`tools/schedules.ts`) — 8 tools
+
+| Tool                                                                                                                                                                                                                              | Purpose                                                                                                            |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `create_schedule({ name, source_type, app_name, github_org?, cron_expr, timezone?, overlap_policy?, title_template, description_md, definition_of_done_md })`                                                                     | Validates cron + IANA timezone. For `github_org`, requires `github_org`. Computes initial `next_run_at`.           |
+| `get_schedule(id_or_name)`                                                                                                                                                                                                        | Returns `{ schedule, last_run, last_5_runs, next_3_fires }`.                                                       |
+| `list_schedules({ app_name?, source_type?, enabled? })`                                                                                                                                                                            | Filtered list.                                                                                                     |
+| `update_schedule(id, { cron_expr?, timezone?, overlap_policy?, title_template?, description_md?, definition_of_done_md?, enabled? })`                                                                                              | Patch. Non-patchable: `source_type`, `app_id`, `github_org`, `name`. Changing cron/timezone recomputes next_run_at. |
+| `delete_schedule(id)`                                                                                                                                                                                                              | Hard delete. Cascades `schedule_runs`; spawned projects untouched.                                                 |
+| `enable_schedule(id)` / `disable_schedule(id)`                                                                                                                                                                                     | Flip `enabled`. Enable recomputes `next_run_at` from now.                                                          |
+| `run_schedule_now(id)`                                                                                                                                                                                                             | Out-of-band fire. Honors `overlap_policy`.                                                                         |
 
 ## 8. Work-item lifecycle
 
@@ -653,6 +674,10 @@ Marketplace entry lives at `.claude-plugin/marketplace.json` and is installed vi
 | `ntfy_url`                                                              | `runner_config` table    | `NULL`                                                      | ntfy topic URL for `awaiting_input` notifications.       |
 | `awaiting_input_nag_age_ms`                                             | `runner_config` table    | `3600000` (1 h)                                             | Minimum age before nagging.                              |
 | `awaiting_input_nag_repeat_ms`                                          | `runner_config` table    | `21600000` (6 h)                                            | Minimum interval between repeat nags.                    |
+| `github_token`                                                          | `runner_config` table    | _(unset)_                                                   | PAT used for `github_org` schedules. Redacted on read.   |
+| `github_default_visibility`                                             | `runner_config` table    | `'all'`                                                     | One of `'all' \| 'public' \| 'private'`. Filters which repos a `github_org` schedule sees. |
+
+**Server env vars:** `SCHEDULER_TICK_MS` (positive int, default `10000`) controls the in-process scheduler tick cadence.
 
 ## 14. Error handling, logging, observability
 
