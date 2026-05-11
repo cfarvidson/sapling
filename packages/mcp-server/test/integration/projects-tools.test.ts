@@ -431,11 +431,18 @@ describe('get_project / list_projects', () => {
     });
     const filtered = (await client.call('list_projects', {
       app_name: 'iris',
-    })) as Array<{ id: number; title: string; description_md?: unknown; status: string }>;
+    })) as Array<{
+      id: number;
+      title: string;
+      description_md?: unknown;
+      status: string;
+      dod_cycle_count: number;
+    }>;
     expect(filtered).toHaveLength(1);
     expect(filtered[0].title).toBe('A');
     expect(filtered[0].description_md).toBeUndefined();
     expect(filtered[0].status).toBe('scoping');
+    expect(filtered[0].dod_cycle_count).toBe(0);
   });
 });
 

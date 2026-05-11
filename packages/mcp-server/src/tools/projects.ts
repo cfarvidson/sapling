@@ -336,7 +336,7 @@ export function registerProjects(server: McpServer, db: Db): void {
       const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
       const { rows } = await db.query(
         `SELECT p.id, p.title, p.status, p.app_id, a.name AS app_name,
-                p.linear_url, p.created_at, p.updated_at
+                p.linear_url, p.dod_cycle_count, p.created_at, p.updated_at
            FROM projects p
            JOIN apps a ON a.id = p.app_id
            ${where}
@@ -746,14 +746,14 @@ export async function advanceProjectAfterWorkCompletion(
        WHERE project_id=$1 AND is_dod_verifier=false AND status <> 'completed'`,
     [projectId],
   );
-  const pendingOrClaimedVerifier = await client.query<{ n: number }>(
+  const nonTerminalVerifier = await client.query<{ n: number }>(
     `SELECT count(*)::int AS n FROM work_items
        WHERE project_id=$1
          AND is_dod_verifier=true
          AND status IN ('pending','claimed','awaiting_input','blocked')`,
     [projectId],
   );
-  if (remainingNonVerifier.rows[0].n === 0 && pendingOrClaimedVerifier.rows[0].n === 0) {
+  if (remainingNonVerifier.rows[0].n === 0 && nonTerminalVerifier.rows[0].n === 0) {
     await client.query(
       `INSERT INTO work_items(type, title, description_markdown, project_id, is_dod_verifier)
        VALUES ('review', $1, $2, $3, true)`,

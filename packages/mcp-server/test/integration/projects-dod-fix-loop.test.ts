@@ -312,4 +312,25 @@ describe('projects — DoD fix loop', () => {
     );
     expect(verifiers.rows[0].n).toBe(1);
   });
+
+  it('retry_project does not reset dod_cycle_count', async () => {
+    const { projectId, verifierId } = await seedProjectWithVerifier();
+    await client.call('complete_work', { id: verifierId, dod_verified: false });
+
+    let proj = await db.pool.query<{ status: string; dod_cycle_count: number }>(
+      `SELECT status, dod_cycle_count FROM projects WHERE id=$1`,
+      [projectId],
+    );
+    expect(proj.rows[0].status).toBe('in_progress');
+    expect(proj.rows[0].dod_cycle_count).toBe(1);
+
+    await client.call('retry_project', { id: projectId });
+
+    proj = await db.pool.query<{ status: string; dod_cycle_count: number }>(
+      `SELECT status, dod_cycle_count FROM projects WHERE id=$1`,
+      [projectId],
+    );
+    expect(proj.rows[0].status).toBe('in_progress');
+    expect(proj.rows[0].dod_cycle_count).toBe(1);
+  });
 });

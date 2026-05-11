@@ -32,6 +32,7 @@ describe('runner_config tools', () => {
               awaiting_input_nag_repeat_ms = DEFAULT,
               github_token = NULL,
               github_default_visibility = DEFAULT,
+              max_dod_fix_cycles = DEFAULT,
               updated_at = now()
         WHERE id = 1`,
     );
