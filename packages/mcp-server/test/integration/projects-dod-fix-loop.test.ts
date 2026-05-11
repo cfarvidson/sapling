@@ -230,6 +230,62 @@ describe('projects — DoD fix loop', () => {
     expect(perPlanReviews.rows[0].n).toBe(0);
   });
 
+  it('unblock after cap: resets dod_cycle_count to 0 and re-arms one fresh verifier', async () => {
+    await db.pool.query(`UPDATE runner_config SET max_dod_fix_cycles = 1 WHERE id = 1`);
+    const { projectId, verifierId } = await seedProjectWithVerifier();
+
+    await client.call('complete_work', { id: verifierId, dod_verified: false });
+
+    let proj = await db.pool.query<{
+      status: string;
+      dod_cycle_count: number;
+      failure_reason: string | null;
+    }>(`SELECT status, dod_cycle_count, failure_reason FROM projects WHERE id=$1`, [projectId]);
+    expect(proj.rows[0].status).toBe('blocked');
+    expect(proj.rows[0].dod_cycle_count).toBe(1);
+    expect(proj.rows[0].failure_reason).toBe('DoD not verified after 1 cycles');
+
+    await client.call('unblock_project', { id: projectId });
+
+    proj = await db.pool.query<{
+      status: string;
+      dod_cycle_count: number;
+      failure_reason: string | null;
+    }>(`SELECT status, dod_cycle_count, failure_reason FROM projects WHERE id=$1`, [projectId]);
+    expect(proj.rows[0].status).toBe('in_progress');
+    expect(proj.rows[0].dod_cycle_count).toBe(0);
+
+    const verifiers = await db.pool.query<{ status: string }>(
+      `SELECT status FROM work_items
+         WHERE project_id=$1 AND is_dod_verifier=true
+         ORDER BY id DESC LIMIT 1`,
+      [projectId],
+    );
+    expect(verifiers.rows[0].status).toBe('pending');
+  });
+
+  it('unblock without cap: preserves dod_cycle_count when the block was manual', async () => {
+    const { projectId, verifierId } = await seedProjectWithVerifier();
+    await client.call('complete_work', { id: verifierId, dod_verified: false });
+    await client.call('block_project', { id: projectId, reason: 'manual hold' });
+
+    let proj = await db.pool.query<{ dod_cycle_count: number; status: string }>(
+      `SELECT dod_cycle_count, status FROM projects WHERE id=$1`,
+      [projectId],
+    );
+    expect(proj.rows[0].status).toBe('blocked');
+    expect(proj.rows[0].dod_cycle_count).toBe(1);
+
+    await client.call('unblock_project', { id: projectId });
+
+    proj = await db.pool.query<{ dod_cycle_count: number; status: string }>(
+      `SELECT dod_cycle_count, status FROM projects WHERE id=$1`,
+      [projectId],
+    );
+    expect(proj.rows[0].status).toBe('in_progress');
+    expect(proj.rows[0].dod_cycle_count).toBe(1);
+  });
+
   it('regression: existing pending/claimed verifier blocks re-arm; only stale completed ones do not', async () => {
     const { projectId, serviceId, verifierId } = await seedProjectWithVerifier();
 

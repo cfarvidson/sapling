@@ -508,10 +508,11 @@ export function registerProjects(server: McpServer, db: Db): void {
       const client = await db.connect();
       try {
         await client.query('BEGIN');
-        const proj = await client.query<{ id: number; status: string }>(
-          `SELECT id, status FROM projects WHERE id=$1 FOR UPDATE`,
-          [id],
-        );
+        const proj = await client.query<{
+          id: number;
+          status: string;
+          failure_reason: string | null;
+        }>(`SELECT id, status, failure_reason FROM projects WHERE id=$1 FOR UPDATE`, [id]);
         if (proj.rowCount === 0) {
           await client.query('ROLLBACK');
           return errorToToolResult(new AppError('not_found', `project ${id} not found`));
@@ -536,6 +537,16 @@ export function registerProjects(server: McpServer, db: Db): void {
           [id, target],
         );
 
+        const wasCapBlocked =
+          proj.rows[0].failure_reason !== null &&
+          /^DoD not verified after \d+ cycles$/.test(proj.rows[0].failure_reason);
+        if (wasCapBlocked) {
+          await client.query(
+            `UPDATE projects SET dod_cycle_count = 0, updated_at = now() WHERE id = $1`,
+            [id],
+          );
+        }
+
         // Cascade-unblock children carrying the reserved marker prefix.
         const cascade = await client.query(
           `UPDATE work_items
@@ -548,9 +559,11 @@ export function registerProjects(server: McpServer, db: Db): void {
           [id],
         );
 
-        // Replay every completion that happened during the blocked window, in chronological order.
-        // The helper's per-plan-review and DoD-verifier branches are gated on "no existing review/verifier",
-        // so replaying triggers that already fired is a no-op.
+        // Replay non-verifier completions to re-fire auto-enqueue triggers (per-plan reviews,
+        // fresh DoD verifier) that may have been skipped while the project was blocked. We skip
+        // verifier completions because their effect (project→done, or counter bump + cap-block)
+        // was applied at complete_work time; replaying them now under a dod_verified=undefined
+        // row would incorrectly flip the project back to 'done'.
         const completions = await client.query<{
           id: number;
           project_id: number;
@@ -560,7 +573,7 @@ export function registerProjects(server: McpServer, db: Db): void {
         }>(
           `SELECT id, project_id, plan_id, type, is_dod_verifier
              FROM work_items
-            WHERE project_id = $1 AND status = 'completed'
+            WHERE project_id = $1 AND status = 'completed' AND is_dod_verifier = false
             ORDER BY completed_at ASC NULLS LAST, id ASC`,
           [id],
         );
