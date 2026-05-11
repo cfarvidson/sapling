@@ -204,4 +204,29 @@ describe('projects — DoD fix loop', () => {
     );
     expect(verifiers.rows[0].n).toBe(2);
   });
+
+  it('per-plan trigger isolation: fix items with plan_id=NULL do not auto-enqueue a per-plan review', async () => {
+    const { projectId, serviceId, verifierId } = await seedProjectWithVerifier();
+
+    const fix = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 'plan-less fix',
+      description_markdown: 'd',
+      service_id: serviceId,
+      project_id: projectId,
+    })) as { id: number };
+
+    await client.call('complete_work', { id: verifierId, dod_verified: false });
+    await client.call('complete_work', { id: fix.id });
+
+    const perPlanReviews = await db.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM work_items
+         WHERE project_id=$1
+           AND type='review'
+           AND is_dod_verifier=false
+           AND plan_id IS NULL`,
+      [projectId],
+    );
+    expect(perPlanReviews.rows[0].n).toBe(0);
+  });
 });
