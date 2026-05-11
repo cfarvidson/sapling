@@ -262,7 +262,18 @@ Two creation paths:
 From there the auto-enqueue triggers in `complete_work` do the rest:
 
 - When every `code` item under a single plan completes, one `review` work item is auto-enqueued for that plan.
-- When every non-verifier work item under the project completes, one final `review` is auto-enqueued with `is_dod_verifier = true`, titled "Verify Definition of Done for project N: …". When that verifier flips to `completed`, the project flips to `done`.
+- When every non-verifier work item under the project completes, one final `review` is auto-enqueued with `is_dod_verifier = true`, titled "Verify Definition of Done for project N: …". When that verifier completes with `dod_verified=true` (or omitted), the project flips to `done`.
+
+### DoD fix loop
+
+When the DoD verifier reports `dod_verified=false`, Sapling auto-arms a remediation loop:
+
+1. The verifier enqueues one `code` work item per gap (with `project_id` set and no `plan_id`).
+2. Once those fix items complete, the server enqueues a fresh DoD verifier.
+3. The loop spins up to `runner_config.max_dod_fix_cycles` rounds (default `3`) before the project is auto-blocked with `failure_reason='DoD not verified after N cycles'`.
+4. `unblock_project` on a cap-blocked project resets the cycle counter to 0 — one explicit human action grants a full fresh budget.
+
+`/sapling:status` shows the cycle count per project; `/sapling:queue project <id>` shows count and cap in the header.
 
 A few invariants worth knowing:
 
