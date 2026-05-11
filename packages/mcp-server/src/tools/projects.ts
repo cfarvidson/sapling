@@ -8,6 +8,104 @@ function ok(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
 }
 
+export interface CreateProjectInput {
+  app_id: number;
+  app_name: string;
+  title: string;
+  description_md: string;
+  definition_of_done_md: string;
+  linear_url?: string;
+  service_ids?: number[];
+}
+
+export interface CreateProjectResult {
+  project: Record<string, unknown>;
+  scoping_work?: Record<string, unknown>;
+  plan_work_items?: Record<string, unknown>[];
+}
+
+export async function createProjectInTx(
+  client: PoolClient,
+  input: CreateProjectInput,
+): Promise<CreateProjectResult> {
+  if (!input.definition_of_done_md.trim()) {
+    throw new AppError('invalid_input', 'definition_of_done_md must not be empty');
+  }
+
+  const fastPath = (input.service_ids?.length ?? 0) > 0;
+  if (fastPath) {
+    const services = await client.query<{ id: number; app_id: number; name: string }>(
+      `SELECT id, app_id, name FROM services WHERE id = ANY($1::int[])`,
+      [input.service_ids],
+    );
+    if (services.rowCount !== input.service_ids!.length) {
+      throw new AppError('not_found', 'one or more service_ids not found');
+    }
+    const wrong = services.rows.find((s) => s.app_id !== input.app_id);
+    if (wrong) {
+      throw new AppError(
+        'invalid_input',
+        `service ${wrong.id} (${wrong.name}) does not belong to app ${input.app_name}`,
+      );
+    }
+  }
+
+  const initialStatus = fastPath ? 'in_progress' : 'scoping';
+  const projInsert = await client.query(
+    `INSERT INTO projects(app_id, title, description_md, definition_of_done_md, linear_url, status)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING *`,
+    [
+      input.app_id,
+      input.title,
+      input.description_md,
+      input.definition_of_done_md,
+      input.linear_url ?? null,
+      initialStatus,
+    ],
+  );
+  const project = projInsert.rows[0];
+
+  if (!fastPath) {
+    const scoping = await client.query(
+      `INSERT INTO work_items(type, title, description_markdown, project_id)
+       VALUES ('plan', $1, $2, $3)
+       RETURNING *`,
+      [
+        `Scope project ${project.id}: ${project.title}`,
+        `Scoping work for project ${project.id}.\n\n` +
+          `Description:\n\n${project.description_md}\n\n` +
+          `Definition of Done:\n\n${project.definition_of_done_md}\n\n` +
+          `When you finish exploring, attach a 'scoping' artifact summarising which services are touched, ` +
+          `then call complete_scoping(project_id=${project.id}, service_ids=[...]).`,
+        project.id,
+      ],
+    );
+    return { project, scoping_work: scoping.rows[0] };
+  }
+
+  const planWorkItems = [];
+  for (const serviceId of input.service_ids!) {
+    const w = await client.query(
+      `INSERT INTO work_items(type, title, description_markdown, service_id, project_id)
+       VALUES ('plan', $1, $2, $3, $4)
+       RETURNING *`,
+      [
+        `Plan service ${serviceId} for project ${project.id}: ${project.title}`,
+        `Per-service plan for project ${project.id} (service ${serviceId}).\n\n` +
+          `Description:\n\n${project.description_md}\n\n` +
+          `Definition of Done:\n\n${project.definition_of_done_md}\n\n` +
+          `When you finish, call create_plan(project_id=${project.id}, service_id=${serviceId}, ...) ` +
+          `and enqueue code work items beneath the new plan id.`,
+        serviceId,
+        project.id,
+      ],
+    );
+    planWorkItems.push(w.rows[0]);
+  }
+  return { project, plan_work_items: planWorkItems };
+}
+
 export function registerProjects(server: McpServer, db: Db): void {
   server.registerTool(
     'create_project',
@@ -24,16 +122,9 @@ export function registerProjects(server: McpServer, db: Db): void {
       },
     },
     async (input) => {
-      if (!input.definition_of_done_md.trim()) {
-        return errorToToolResult(
-          new AppError('invalid_input', 'definition_of_done_md must not be empty'),
-        );
-      }
-
       const client = await db.connect();
       try {
         await client.query('BEGIN');
-
         const appLookup = await client.query<{ id: number }>(
           `SELECT id FROM apps WHERE name = $1`,
           [input.app_name],
@@ -43,89 +134,20 @@ export function registerProjects(server: McpServer, db: Db): void {
           return errorToToolResult(new AppError('not_found', `app ${input.app_name} not found`));
         }
         const appId = appLookup.rows[0].id;
-
-        const fastPath = (input.service_ids?.length ?? 0) > 0;
-        if (fastPath) {
-          const services = await client.query<{ id: number; app_id: number; name: string }>(
-            `SELECT id, app_id, name FROM services WHERE id = ANY($1::int[])`,
-            [input.service_ids],
-          );
-          if (services.rowCount !== input.service_ids!.length) {
-            await client.query('ROLLBACK');
-            return errorToToolResult(
-              new AppError('not_found', 'one or more service_ids not found'),
-            );
-          }
-          const wrong = services.rows.find((s) => s.app_id !== appId);
-          if (wrong) {
-            await client.query('ROLLBACK');
-            return errorToToolResult(
-              new AppError(
-                'invalid_input',
-                `service ${wrong.id} (${wrong.name}) does not belong to app ${input.app_name}`,
-              ),
-            );
-          }
-        }
-
-        const initialStatus = fastPath ? 'in_progress' : 'scoping';
-        const projInsert = await client.query(
-          `INSERT INTO projects(app_id, title, description_md, definition_of_done_md, linear_url, status)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           RETURNING *`,
-          [
-            appId,
-            input.title,
-            input.description_md,
-            input.definition_of_done_md,
-            input.linear_url ?? null,
-            initialStatus,
-          ],
-        );
-        const project = projInsert.rows[0];
-
-        if (!fastPath) {
-          const scoping = await client.query(
-            `INSERT INTO work_items(type, title, description_markdown, project_id)
-             VALUES ('plan', $1, $2, $3)
-             RETURNING *`,
-            [
-              `Scope project ${project.id}: ${project.title}`,
-              `Scoping work for project ${project.id}.\n\n` +
-                `Description:\n\n${project.description_md}\n\n` +
-                `Definition of Done:\n\n${project.definition_of_done_md}\n\n` +
-                `When you finish exploring, attach a 'scoping' artifact summarising which services are touched, ` +
-                `then call complete_scoping(project_id=${project.id}, service_ids=[...]).`,
-              project.id,
-            ],
-          );
-          await client.query('COMMIT');
-          return ok({ project, scoping_work: scoping.rows[0] });
-        }
-
-        const planWorkItems = [];
-        for (const serviceId of input.service_ids!) {
-          const w = await client.query(
-            `INSERT INTO work_items(type, title, description_markdown, service_id, project_id)
-             VALUES ('plan', $1, $2, $3, $4)
-             RETURNING *`,
-            [
-              `Plan service ${serviceId} for project ${project.id}: ${project.title}`,
-              `Per-service plan for project ${project.id} (service ${serviceId}).\n\n` +
-                `Description:\n\n${project.description_md}\n\n` +
-                `Definition of Done:\n\n${project.definition_of_done_md}\n\n` +
-                `When you finish, call create_plan(project_id=${project.id}, service_id=${serviceId}, ...) ` +
-                `and enqueue code work items beneath the new plan id.`,
-              serviceId,
-              project.id,
-            ],
-          );
-          planWorkItems.push(w.rows[0]);
-        }
+        const result = await createProjectInTx(client, {
+          app_id: appId,
+          app_name: input.app_name,
+          title: input.title,
+          description_md: input.description_md,
+          definition_of_done_md: input.definition_of_done_md,
+          linear_url: input.linear_url,
+          service_ids: input.service_ids,
+        });
         await client.query('COMMIT');
-        return ok({ project, plan_work_items: planWorkItems });
+        return ok(result);
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
+        if (err instanceof AppError) return errorToToolResult(err);
         return errorToToolResult(mapPgError(err as { code?: string; message?: string }));
       } finally {
         client.release();

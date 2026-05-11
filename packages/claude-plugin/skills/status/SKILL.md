@@ -30,6 +30,8 @@ Summarize the current state of the Sapling queue, grouped by app so the user can
 
 3. **In parallel, call** `mcp__sapling__list_projects({ app_name? })`. Project rows include `id`, `title`, `status`, `app_name`, `linear_url`. Skip this call entirely (and skip rendering the Projects section) if it returns an empty array.
 
+3b. **In parallel, call** `mcp__sapling__list_schedules({})`. If the result is non-empty, also gather the most recent failed run per schedule. The simplest pull pattern is: for each schedule whose `last_fired_at` is non-null AND older than its `next_run_at`, call `mcp__sapling__get_schedule({ id_or_name: id })` to fetch `last_run`. Skip schedules whose `last_run.status !== 'failed'`. Skip the entire schedule summary when `list_schedules` returned `[]`.
+
 4. Group the work-item rows by `app_name`. Sort apps alphabetically; render `(unassigned)` last. For each app, output the **Projects section** first if any project exists for that app, then the work sections:
 
 ```
@@ -53,6 +55,17 @@ reason: <failure_reason>
 ```
 
 Skip empty subsections (including the entire Projects header if no projects exist for that app) to keep the output dense. If `awaiting_input` count > 0, compute `oldest_age` = the largest `now() - updated_at` across the awaiting_input rows for that app, formatted as `Nm` for < 60 minutes, `Nh` for < 48 hours, else `Nd`. Suppress the `(oldest …)` parenthetical entirely when the count is zero. When a row's `team_name`, `plan_id`, or `project_id` is null, suppress that key entirely. If `awaiting_input` totals are non-zero anywhere, append `Run /sapling:human to answer.` to the footer.
+
+4b. **Schedules summary** (only if `list_schedules` returned ≥1 row). Output a single section above the totals row:
+
+    ```
+    ## Schedules
+    SCHEDULES <total> ENABLED <e> DISABLED <d>
+    next fire: <ISO> — "<name>" (in <Nm|Nh|Nd>)
+    last failure: <ISO> — "<name>" (<error>)
+    ```
+
+    "next fire" is the schedule with the smallest `next_run_at` among enabled rows. "last failure" is the most recent failed run across all schedules (only printed if at least one exists). If neither line has data to show, omit that line. If there are zero schedules, omit the entire Schedules section (matches how awaiting_input is omitted when zero).
 
 5. After the per-app sections, print a one-line cross-app totals row:
 

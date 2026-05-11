@@ -35,6 +35,7 @@ That gives you these `/sapling:<name>` slash commands:
 - `/sapling:rules [<service> | app <app-name>] [add|replace|remove|clear …]` — manage binding rules for an app or service
 - `/sapling:context <service>` — load service context
 - `/sapling:learn <app> [<path1> ...]` — research repos for an app; populate services, dependencies, and an architecture artifact
+- `/sapling:schedule [<action> [args…]]` — manage recurring projects (create / list / show / edit / enable / disable / run / delete)
 
 If you'd rather wire the MCP server up by hand instead of installing the plugin, point your client at the running server:
 
@@ -90,6 +91,28 @@ Set `MCP_TOKEN=...` in `.env` to require a bearer token on `/mcp`. Then update y
   }
 }
 ```
+
+## Recurring projects
+
+Sapling can fire `create_project` on a cron schedule. Each schedule targets either:
+
+- a Sapling **app** — resolved to its current `services` at fire time, or
+- a **GitHub org** — repos discovered live via the GitHub API at fire time and mapped to (or auto-created as) services under a designated app.
+
+```text
+/sapling:schedule create
+# walks you through name, source, cron, timezone, title template, DoD
+```
+
+Configure the GitHub token first if you plan to use `github_org` sources:
+
+```text
+update_runner_config({ github_token: "ghp_…" })
+```
+
+Inspect: `/sapling:schedule` (list) or `/sapling:schedule show <id>` (detail + next 3 fires + last 5 runs).
+
+The scheduler ticks every `SCHEDULER_TICK_MS` ms (default 10000) inside `mcp-server`; no extra process required.
 
 ## Layout
 
