@@ -669,9 +669,35 @@ export async function advanceProjectAfterWorkCompletion(
   if (status !== 'scoping' && status !== 'in_progress') return;
 
   if (completed.is_dod_verifier) {
-    await client.query(`UPDATE projects SET status='done', updated_at=now() WHERE id=$1`, [
-      projectId,
-    ]);
+    if (completed.dod_verified !== false) {
+      await client.query(`UPDATE projects SET status='done', updated_at=now() WHERE id=$1`, [
+        projectId,
+      ]);
+      return;
+    }
+    const cfg = await client.query<{ max_dod_fix_cycles: number }>(
+      `SELECT max_dod_fix_cycles FROM runner_config WHERE id = 1`,
+    );
+    const cap = cfg.rows[0].max_dod_fix_cycles;
+    const bumped = await client.query<{ dod_cycle_count: number }>(
+      `UPDATE projects
+          SET dod_cycle_count = dod_cycle_count + 1,
+              updated_at = now()
+        WHERE id = $1
+        RETURNING dod_cycle_count`,
+      [projectId],
+    );
+    const newCount = bumped.rows[0].dod_cycle_count;
+    if (newCount >= cap) {
+      await client.query(
+        `UPDATE projects
+            SET status = 'blocked',
+                failure_reason = $2,
+                updated_at = now()
+          WHERE id = $1`,
+        [projectId, `DoD not verified after ${newCount} cycles`],
+      );
+    }
     return;
   }
 
