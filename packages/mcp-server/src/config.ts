@@ -9,6 +9,7 @@ const ConfigSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   MCP_TOKEN: z.string().optional(),
+  SCHEDULER_TICK_MS: z.coerce.number().int().positive().default(10000),
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
