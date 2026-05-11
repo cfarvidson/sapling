@@ -165,4 +165,18 @@ describe('schedule CRUD tools', () => {
     const out = (await client.call('run_schedule_now', { id: c.id })) as { status: string };
     expect(out.status).toBe('fired');
   });
+
+  it('update_schedule does NOT recompute next_run_at when only non-cron fields change (regression for C-01)', async () => {
+    const created = (await client.call('create_schedule', valid)) as {
+      id: number;
+      next_run_at: string;
+    };
+    const before = new Date(created.next_run_at).getTime();
+    // Patch a non-cron field only.
+    const updated = (await client.call('update_schedule', {
+      id: created.id,
+      title_template: 'Re-titled',
+    })) as { next_run_at: string };
+    expect(new Date(updated.next_run_at).getTime()).toBe(before);
+  });
 });

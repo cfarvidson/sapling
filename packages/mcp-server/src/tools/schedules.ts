@@ -193,11 +193,13 @@ export function registerSchedules(server: McpServer, db: Db): void {
           new AppError('invalid_input', 'update_schedule requires at least one patchable field'),
         );
 
-      const newCron = input.cron_expr ?? sched.cron_expr;
-      const newTz = input.timezone ?? sched.timezone;
-      const next = nextCronTick(newCron, newTz, new Date());
-      vals.push(next);
-      sets.push(`next_run_at = $${vals.length}`);
+      if (input.cron_expr !== undefined || input.timezone !== undefined) {
+        const newCron = input.cron_expr ?? sched.cron_expr;
+        const newTz = input.timezone ?? sched.timezone;
+        const next = nextCronTick(newCron, newTz, new Date());
+        vals.push(next);
+        sets.push(`next_run_at = $${vals.length}`);
+      }
       sets.push(`updated_at = now()`);
 
       vals.push(sched.id);
