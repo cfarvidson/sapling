@@ -648,6 +648,7 @@ export interface CompletedWork {
   plan_id: number | null;
   type: 'plan' | 'code' | 'review';
   is_dod_verifier: boolean;
+  dod_verified?: boolean;
 }
 
 export async function advanceProjectAfterWorkCompletion(
