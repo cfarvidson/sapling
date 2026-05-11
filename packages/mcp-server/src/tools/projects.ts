@@ -733,12 +733,14 @@ export async function advanceProjectAfterWorkCompletion(
        WHERE project_id=$1 AND is_dod_verifier=false AND status <> 'completed'`,
     [projectId],
   );
-  const verifierExists = await client.query<{ n: number }>(
+  const pendingOrClaimedVerifier = await client.query<{ n: number }>(
     `SELECT count(*)::int AS n FROM work_items
-       WHERE project_id=$1 AND is_dod_verifier=true`,
+       WHERE project_id=$1
+         AND is_dod_verifier=true
+         AND status IN ('pending','claimed','awaiting_input','blocked')`,
     [projectId],
   );
-  if (remainingNonVerifier.rows[0].n === 0 && verifierExists.rows[0].n === 0) {
+  if (remainingNonVerifier.rows[0].n === 0 && pendingOrClaimedVerifier.rows[0].n === 0) {
     await client.query(
       `INSERT INTO work_items(type, title, description_markdown, project_id, is_dod_verifier)
        VALUES ('review', $1, $2, $3, true)`,

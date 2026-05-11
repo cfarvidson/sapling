@@ -69,4 +69,38 @@ describe('projects — DoD fix loop', () => {
     expect(proj.rows[0].status).toBe('in_progress');
     expect(proj.rows[0].dod_cycle_count).toBe(1);
   });
+
+  it('after a failed verifier, completing fix items re-arms a fresh verifier', async () => {
+    const { projectId, serviceId, verifierId } = await seedProjectWithVerifier();
+
+    const fix = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 'add tests',
+      description_markdown: 'd',
+      service_id: serviceId,
+      project_id: projectId,
+    })) as { id: number };
+
+    await client.call('complete_work', { id: verifierId, dod_verified: false });
+
+    let verifiers = await db.pool.query<{ id: number; status: string }>(
+      `SELECT id, status FROM work_items
+         WHERE project_id=$1 AND is_dod_verifier=true
+         ORDER BY id ASC`,
+      [projectId],
+    );
+    expect(verifiers.rowCount).toBe(1);
+    expect(verifiers.rows[0].status).toBe('completed');
+
+    await client.call('complete_work', { id: fix.id });
+
+    verifiers = await db.pool.query<{ id: number; status: string }>(
+      `SELECT id, status FROM work_items
+         WHERE project_id=$1 AND is_dod_verifier=true
+         ORDER BY id ASC`,
+      [projectId],
+    );
+    expect(verifiers.rowCount).toBe(2);
+    expect(verifiers.rows[1].status).toBe('pending');
+  });
 });
