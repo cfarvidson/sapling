@@ -157,6 +157,7 @@ Authoritative source: `packages/mcp-server/src/schema/*.sql`. The migrations app
 | `008_depends_on_work_id.sql`    | Adds `work_items.depends_on_work_id` (self-FK, `ON DELETE SET NULL`) and a partial index.                                                                                        |
 | `010_runner_ntfy_config.sql`    | Adds `ntfy_url` (TEXT, nullable), `awaiting_input_nag_age_ms` (INT NOT NULL DEFAULT 3600000), `awaiting_input_nag_repeat_ms` (INT NOT NULL DEFAULT 21600000) to `runner_config`. |
 | `011_schedules.sql`             | Creates `schedules`, `schedule_runs`; enums `schedule_source` / `schedule_overlap` / `schedule_run_status`. Adds `runner_config.github_token` (nullable) and `runner_config.github_default_visibility` (default `'all'`). |
+| `012_dod_fix_loop.sql`          | Adds `projects.dod_cycle_count` (INT NOT NULL DEFAULT 0) and `runner_config.max_dod_fix_cycles` (INT NOT NULL DEFAULT 3). |
 
 ### Tables
 
@@ -164,7 +165,7 @@ Authoritative source: `packages/mcp-server/src/schema/*.sql`. The migrations app
 - **`services`** — components of an app. `(app_id, name)` unique; `app_id → apps.id ON DELETE CASCADE`. Carries `repo_url`, `description`, `tech_stack TEXT[]`, `depends_on TEXT[]` (service names, not ids), `conventions`.
 - **`plans`** — markdown plan documents. `parent_plan_id → plans.id ON DELETE SET NULL`, `service_id → services.id ON DELETE SET NULL`. Indexed by `service_id` and `status`.
 - **`work_items`** — the queue. Detailed below.
-- **`projects`** — top-level intents. `app_id → apps.id ON DELETE CASCADE` (NOT NULL — projects are scoped to one app). Carries `title`, `description_md`, `definition_of_done_md`, optional `linear_url`, `status` (see enum), `failure_reason`. See [§ 7](#7-mcp-tool-surface) and [§ 8](#8-work-item-lifecycle) for behavior.
+- **`projects`** — top-level intents. `app_id → apps.id ON DELETE CASCADE` (NOT NULL — projects are scoped to one app). Carries `title`, `description_md`, `definition_of_done_md`, optional `linear_url`, `status` (see enum), `failure_reason`. Adds `dod_cycle_count INT NOT NULL DEFAULT 0` — incremented each time the DoD verifier completes with `dod_verified=false`. Reset to `0` by `unblock_project` only when the project was cap-blocked (`failure_reason` matches `DoD not verified after N cycles`). See [§ 7](#7-mcp-tool-surface) and [§ 8](#8-work-item-lifecycle) for behavior.
 - **`artifacts`** — markdown blobs (review notes, pending questions, answers, architecture summaries, drafts). Optional FKs to `work_item_id`, `plan_id`, `service_id` — all `ON DELETE SET NULL`. Free-form `kind TEXT`. Multiple artifacts of the same kind per parent are allowed.
 - **`teams` / `team_roles` / `team_defaults`** — see [§ Teams](#10-teams).
 - **`runner_config`** — singleton (`PRIMARY KEY DEFAULT 1 CHECK (id = 1)`). See [§ Configuration surface](#13-configuration-surface).
@@ -271,7 +272,7 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 | `claim_next_work(claimed_by, types?, service_id?, app_id?, app_name?)`                                                                            | **Atomic.** `FOR UPDATE SKIP LOCKED`. Skips items with future `next_retry_at`, items past the attempt cap, and items whose `depends_on_work_id` upstream is not `completed`. Returns next pending item or `null`. Sets `status='claimed'`, `claimed_at`, `claimed_by`, `claim_expires_at`, and **increments `attempt_count`**. |
 | `get_work(id)`                                                                                                                                    | Fetch one.                                                                                                                                                                                                                                                                                                                     |
 | `list_work(status?, type?, service_id?, plan_id?, app_id?, app_name?, depends_on_work_id?)`                                                       | Filtered list. Joins `teams` to surface `team_name`. Filter by `depends_on_work_id` to find dependents of an upstream item.                                                                                                                                                                                                    |
-| `complete_work(id, summary_markdown?, artifact_id?)`                                                                                              | Mark `completed`. Optional summary stored as artifact, or link an existing artifact.                                                                                                                                                                                                                                           |
+| `complete_work(id, summary_markdown?, artifact_id?, dod_verified?)`                                                                                              | Mark `completed`. Optional summary stored as artifact, or link an existing artifact. `dod_verified?: boolean` is only meaningful on DoD verifier items: omitted or `true` → project flips to `done` (existing behavior); `false` → bumps `projects.dod_cycle_count` and, if the new value `>= runner_config.max_dod_fix_cycles`, transitions the project to `blocked` with `failure_reason='DoD not verified after N cycles'`. Passing `dod_verified` on a non-verifier item returns `invalid_input`. |
 | `fail_work(id, reason)`                                                                                                                           | Set `failed`. Failed items are not auto-retried.                                                                                                                                                                                                                                                                               |
 | `cancel_work(id, reason?)`                                                                                                                        | Soft delete equivalent.                                                                                                                                                                                                                                                                                                        |
 | `block_work(id, reason)`                                                                                                                          | Set `blocked` from `pending` / `claimed` / `blocked` / `failed`. Reason stored in `failure_reason` (terminal `completed` / `cancelled` items rejected with `conflict`).                                                                                                                                                        |
@@ -292,7 +293,7 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 | Tool                                                                                                                                                                                     | Purpose                                                             |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | `get_runner_config()`                                                                                                                                                                    | Read the singleton config row.                                      |
-| `update_runner_config({ agent_command?, max_concurrent?, poll_interval_ms?, claim_ttl_ms?, max_claim_attempts?, ntfy_url?, awaiting_input_nag_age_ms?, awaiting_input_nag_repeat_ms? })` | Partial upsert. `ntfy_url` accepts `null` to disable notifications. |
+| `update_runner_config({ agent_command?, max_concurrent?, poll_interval_ms?, claim_ttl_ms?, max_claim_attempts?, ntfy_url?, awaiting_input_nag_age_ms?, awaiting_input_nag_repeat_ms?, github_token?, github_default_visibility?, max_dod_fix_cycles? })` | Partial upsert. `ntfy_url` and `github_token` accept `null` to clear. |
 
 ### Human-in-the-loop (`tools/human_input.ts`) — 2 tools
 
@@ -329,7 +330,7 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 | `update_project(id, title?, description_md?, definition_of_done_md?, linear_url?)`                  | Patch. `status` and `app_id` are not patchable — status changes go through lifecycle tools.                                                                                                                                                                                                                                                                                                         |
 | `cancel_project(id, reason?)`                                                                       | Atomic + cascading. Sets project `cancelled`. Cascades `cancel_work` to all non-terminal child work items. Idempotent on already-cancelled.                                                                                                                                                                                                                                                         |
 | `block_project(id, reason)`                                                                         | Sets project `blocked` from `scoping` / `in_progress`. **Cascades**: child work items in `pending` or `awaiting_input` are flipped to `blocked` with `failure_reason = 'project blocked: <reason>'` (the reserved prefix marks cascade-blocked rows). `claimed` children are not touched — Sapling cannot kill the agent process. Returns `{ project, cascade_blocked_count }`.                     |
-| `unblock_project(id)`                                                                               | Recomputes status (`scoping` if a scoping child is in-flight, else `in_progress`). **Cascade-unblocks** children whose `failure_reason` starts with the reserved prefix `'project blocked: '`. Replays `advanceProjectAfterWorkCompletion` for **every** completed non-verifier child in `completed_at` order (helper guards make this idempotent). Returns `{ project, cascade_unblocked_count }`. |
+| `unblock_project(id)`                                                                               | Recomputes status (`scoping` if a scoping child is in-flight, else `in_progress`). **Cascade-unblocks** children whose `failure_reason` starts with the reserved prefix `'project blocked: '`. Replays `advanceProjectAfterWorkCompletion` for **every** completed non-verifier child in `completed_at` order (helper guards make this idempotent); verifier completions are skipped so their terminal effect isn't re-applied. If the prior `failure_reason` matches `^DoD not verified after \d+ cycles$`, also resets `projects.dod_cycle_count` to `0` (cap-induced block → fresh budget). Returns `{ project, cascade_unblocked_count }`. |
 | `retry_project(id)`                                                                                 | For a project that hit `done` but isn't actually done. Status → `in_progress`, existing DoD verifier `retry_work`-ed.                                                                                                                                                                                                                                                                               |
 
 > The `'project blocked: '` prefix on `failure_reason` is reserved. Operators must not use it in `block_work` reason text, or the row will be swept by `unblock_project`'s cascade-unblock.
@@ -437,10 +438,13 @@ Projects steer what gets enqueued and when. The logic concentrates in two tool i
 
 1. **`complete_scoping(project_id, service_ids[])`** — fans out one `plan` work item per service with `project_id` set, then flips the project from `scoping` to `in_progress`. The scoping agent's separate `complete_work` on its own work item is unaffected.
 2. **`complete_work(id, ...)`** — if the completed item has a `project_id`, calls `advanceProjectAfterWorkCompletion(client, projectId, completedWork)` inside the same transaction. That helper fires these checks in order:
-   - **DoD-verifier completed** (`is_dod_verifier = true`) → flip project to `done`.
+   - **DoD-verifier completed** (`is_dod_verifier = true`) — branches on `dod_verified` passed to `complete_work`:
+     - omitted or `true` → flip project to `done`.
+     - `false` → bump `projects.dod_cycle_count`; if the new value `>= runner_config.max_dod_fix_cycles`, transition the project to `blocked` with `failure_reason='DoD not verified after N cycles'`. Otherwise stay `in_progress`.
    - **Per-plan review** — if the completed item is `code` and every code work item under the same `plan_id` is now completed, auto-enqueue one `review` work item with `project_id` linked to that plan.
-   - **DoD verifier** — if the completed item is a non-verifier `review` and every non-verifier work item under the project is now completed, auto-enqueue one final `review` with `is_dod_verifier = true`, titled "Verify Definition of Done for project N: \<title\>."
-   - **Blocked projects** — while a project is `blocked`, the helper is a no-op; `unblock_project` re-runs it once to catch up on any triggers that fired during the blocked window.
+   - **DoD verifier** — if the completed item is a non-verifier and every non-verifier work item under the project is now completed, auto-enqueue one final `review` with `is_dod_verifier = true`, titled "Verify Definition of Done for project N: \<title\>." The re-arm guard is "no *pending / claimed / awaiting_input / blocked* verifier exists" — completed-but-unverified verifiers (see DoD fix loop below) do **not** block re-arm.
+   - **DoD fix loop** — when the verifier completes with `dod_verified=false`, the server bumps `projects.dod_cycle_count`. If the new count `>= runner_config.max_dod_fix_cycles` (default 3), the project transitions to `blocked` with `failure_reason='DoD not verified after N cycles'` and no further verifier is auto-enqueued. Otherwise the project stays `in_progress`; once any fix work items the verifier enqueued (typically `type='code'` with `plan_id=NULL`) complete, the standard "all non-verifier done → enqueue verifier" rule fires under the relaxed guard and the loop runs again. `unblock_project` on a cap-blocked project (failure_reason matches `^DoD not verified after \d+ cycles$`) resets `dod_cycle_count` to `0` — one explicit human action grants a fresh budget. On a manually-blocked project mid-cycle, the counter is preserved. `retry_project` does **not** reset the counter.
+   - **Blocked projects** — while a project is `blocked`, the helper is a no-op; `unblock_project` re-runs it once over non-verifier completions to catch up on any triggers that fired during the blocked window.
 
 **Project lifecycle state diagram:**
 
@@ -459,14 +463,23 @@ scoping ── complete_scoping ────────────────
                                                    ▼
                                         [verifier completes]
                                                    │
-                                  ┌────────────────┼────────────────┐
-                                  ▼                                 ▼
-                                done                       stays in_progress
-                                                          (writes dod_gaps artifact)
+                          ┌────────────────────────┼────────────────────────┐
+                          ▼                        ▼                        ▼
+              dod_verified=true / omit    dod_verified=false +    dod_verified=false +
+                          │              count < cap              count >= cap
+                          ▼                        │                        │
+                        done                       ▼                        ▼
+                                          stays in_progress           blocked (cap)
+                                          (fix items enqueue;          failure_reason=
+                                           fresh verifier auto-          'DoD not verified
+                                           arms once fixes done)          after N cycles'
+
+   unblock_project on a cap-blocked project (failure_reason matches
+   ^DoD not verified after \d+ cycles$) additionally resets dod_cycle_count to 0.
 
    block_project   ──> blocked  ── unblock_project ──> (recomputed prior state)
                           │                           + cascade-unblock children
-                          │                           + replay all completions
+                          │                           + replay non-verifier completions
                           │  cascades to pending +
                           │  awaiting_input children
                           │  (claimed left alone)
@@ -676,6 +689,7 @@ Marketplace entry lives at `.claude-plugin/marketplace.json` and is installed vi
 | `awaiting_input_nag_repeat_ms`                                          | `runner_config` table    | `21600000` (6 h)                                            | Minimum interval between repeat nags.                    |
 | `github_token`                                                          | `runner_config` table    | _(unset)_                                                   | PAT used for `github_org` schedules. Redacted on read.   |
 | `github_default_visibility`                                             | `runner_config` table    | `'all'`                                                     | One of `'all' \| 'public' \| 'private'`. Filters which repos a `github_org` schedule sees. |
+| `max_dod_fix_cycles`                                                    | `runner_config` table    | `3`                                                         | Number of DoD fix cycles allowed before a project is auto-blocked. |
 
 **Server env vars:** `SCHEDULER_TICK_MS` (positive int, default `10000`) controls the in-process scheduler tick cadence.
 
