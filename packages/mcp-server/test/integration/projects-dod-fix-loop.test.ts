@@ -229,4 +229,32 @@ describe('projects — DoD fix loop', () => {
     );
     expect(perPlanReviews.rows[0].n).toBe(0);
   });
+
+  it('regression: existing pending/claimed verifier blocks re-arm; only stale completed ones do not', async () => {
+    const { projectId, serviceId, verifierId } = await seedProjectWithVerifier();
+
+    const extra = (await client.call('enqueue_work', {
+      type: 'code',
+      title: 'extra',
+      description_markdown: 'd',
+      service_id: serviceId,
+      project_id: projectId,
+    })) as { id: number };
+    await client.call('complete_work', { id: extra.id });
+
+    let verifiers = await db.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM work_items
+         WHERE project_id=$1 AND is_dod_verifier=true`,
+      [projectId],
+    );
+    expect(verifiers.rows[0].n).toBe(1);
+
+    await client.call('complete_work', { id: verifierId, dod_verified: true });
+    verifiers = await db.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM work_items
+         WHERE project_id=$1 AND is_dod_verifier=true`,
+      [projectId],
+    );
+    expect(verifiers.rows[0].n).toBe(1);
+  });
 });
