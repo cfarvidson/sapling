@@ -158,4 +158,13 @@ describe('runner_config tools', () => {
     });
     expect(raw.isError).toBe(true);
   });
+
+  it('update_runner_config sets max_dod_fix_cycles and get_runner_config returns it', async () => {
+    const upd = (await client.call('update_runner_config', {
+      max_dod_fix_cycles: 5,
+    })) as { max_dod_fix_cycles: number };
+    expect(upd.max_dod_fix_cycles).toBe(5);
+    const got = (await client.call('get_runner_config', {})) as { max_dod_fix_cycles: number };
+    expect(got.max_dod_fix_cycles).toBe(5);
+  });
 });
