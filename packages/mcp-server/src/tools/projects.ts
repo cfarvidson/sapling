@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Db } from '../db.js';
 import { AppError, errorToToolResult, mapPgError } from '../errors.js';
+import { resolveTeamDefault } from '../team-defaults.js';
 
 function ok(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
@@ -674,9 +675,11 @@ export async function advanceProjectAfterWorkCompletion(
     title: string;
     status: string;
     definition_of_done_md: string;
-  }>(`SELECT id, title, status, definition_of_done_md FROM projects WHERE id=$1 FOR UPDATE`, [
-    projectId,
-  ]);
+    app_id: number;
+  }>(
+    `SELECT id, title, status, definition_of_done_md, app_id FROM projects WHERE id=$1 FOR UPDATE`,
+    [projectId],
+  );
   if (proj.rowCount === 0) return;
   const status = proj.rows[0].status;
   if (status !== 'scoping' && status !== 'in_progress') return;
@@ -726,9 +729,10 @@ export async function advanceProjectAfterWorkCompletion(
       [completed.plan_id],
     );
     if (remaining.rows[0].n === 0 && reviewExists.rows[0].n === 0) {
+      const teamId = await resolveTeamDefault(client, proj.rows[0].app_id, 'review');
       await client.query(
-        `INSERT INTO work_items(type, title, description_markdown, plan_id, project_id)
-         VALUES ('review', $1, $2, $3, $4)`,
+        `INSERT INTO work_items(type, title, description_markdown, plan_id, project_id, team_id)
+         VALUES ('review', $1, $2, $3, $4, $5)`,
         [
           `Review plan ${completed.plan_id} for project ${projectId}`,
           `Auto-enqueued review for plan ${completed.plan_id} under project ${projectId}.\n\n` +
@@ -736,6 +740,7 @@ export async function advanceProjectAfterWorkCompletion(
             `approve, request changes, or comment per /sapling:work review semantics.`,
           completed.plan_id,
           projectId,
+          teamId,
         ],
       );
     }
@@ -754,9 +759,10 @@ export async function advanceProjectAfterWorkCompletion(
     [projectId],
   );
   if (remainingNonVerifier.rows[0].n === 0 && nonTerminalVerifier.rows[0].n === 0) {
+    const teamId = await resolveTeamDefault(client, proj.rows[0].app_id, 'review');
     await client.query(
-      `INSERT INTO work_items(type, title, description_markdown, project_id, is_dod_verifier)
-       VALUES ('review', $1, $2, $3, true)`,
+      `INSERT INTO work_items(type, title, description_markdown, project_id, is_dod_verifier, team_id)
+       VALUES ('review', $1, $2, $3, true, $4)`,
       [
         `Verify Definition of Done for project ${projectId}: ${proj.rows[0].title}`,
         `All non-verifier work items are completed. Verify each DoD criterion against shipped reality (PRs, tests, code).\n\n` +
@@ -772,6 +778,7 @@ export async function advanceProjectAfterWorkCompletion(
           `     → cycle counter bumps; a fresh verifier auto-arms once fixes complete, ` +
           `unless max_dod_fix_cycles is hit, in which case the project is auto-blocked.`,
         projectId,
+        teamId,
       ],
     );
   }
