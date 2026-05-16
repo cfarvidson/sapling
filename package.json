@@ -7,7 +7,7 @@
   "scripts": {
     "lint": "eslint --ext .ts,.tsx packages",
     "format": "prettier --write .",
-    "test": "pnpm --filter mcp-server test && pnpm --filter sapling-runner test && pnpm --filter sapling-tui test",
+    "test": "pnpm --filter sapling-mcp-client test && pnpm --filter mcp-server test && pnpm --filter sapling-runner test && pnpm --filter sapling-tui test",
     "build": "pnpm --filter sapling-mcp-client build && pnpm --filter mcp-server build && pnpm --filter sapling-runner build && pnpm --filter sapling-tui build",
     "runner:start": "pnpm --filter sapling-runner dev",
     "runner:test": "pnpm --filter sapling-runner test",

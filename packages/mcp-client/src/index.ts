@@ -205,11 +205,74 @@ export function wrapMcpClient(client: Client): McpClient {
   };
 }
 
+/**
+ * The Streamable HTTP MCP server keeps sessions in an in-memory map; if the
+ * server restarts, the runner's existing session id is no longer recognized
+ * and every subsequent tool call returns:
+ *
+ *   invalid_request: missing session for non-initialize request
+ *
+ * Detect that exact failure mode so callers can transparently reconnect
+ * instead of wedging on the dead session forever.
+ */
+export function isSessionLostError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /missing session for non-initialize request/i.test(msg);
+}
+
+/**
+ * Build a wrapper around the SDK Client that auto-reconnects on a
+ * session-lost error. On any call to a tool method, we:
+ *   1. attempt the call against the current inner client;
+ *   2. on a session-lost error, close the dead client, build a fresh
+ *      transport + Client, and retry the call exactly once.
+ *
+ * Without this, the consumer keeps retrying with a session id the server
+ * has forgotten and wedges silently. With it, an mcp-server restart looks
+ * like a single hiccup in the consumer's logs.
+ */
 export async function createHttpMcpClient(url: string, token?: string): Promise<McpClient> {
-  const transport = new StreamableHTTPClientTransport(new URL(url), {
-    requestInit: token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
-  });
-  const client = new Client({ name: 'sapling-mcp-client', version: '0.0.0' });
-  await client.connect(transport);
-  return wrapMcpClient(client);
+  async function connect(): Promise<Client> {
+    const transport = new StreamableHTTPClientTransport(new URL(url), {
+      requestInit: token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+    });
+    const client = new Client({ name: 'sapling-mcp-client', version: '0.0.0' });
+    await client.connect(transport);
+    return client;
+  }
+
+  let inner = wrapMcpClient(await connect());
+
+  async function withReconnect<T>(fn: (c: McpClient) => Promise<T>): Promise<T> {
+    try {
+      return await fn(inner);
+    } catch (err) {
+      if (!isSessionLostError(err)) throw err;
+      try {
+        await inner.close();
+      } catch {
+        // The old transport is already broken; closing may fail. Ignore.
+      }
+      inner = wrapMcpClient(await connect());
+      return fn(inner);
+    }
+  }
+
+  return {
+    reapStuckClaims: (now) => withReconnect((c) => c.reapStuckClaims(now)),
+    getRunnerConfig: () => withReconnect((c) => c.getRunnerConfig()),
+    listPendingWork: () => withReconnect((c) => c.listPendingWork()),
+    listAwaitingInput: () => withReconnect((c) => c.listAwaitingInput()),
+    listWork: (filters) => withReconnect((c) => c.listWork(filters)),
+    listArtifacts: (params) => withReconnect((c) => c.listArtifacts(params)),
+    unblockWork: (id) => withReconnect((c) => c.unblockWork(id)),
+    retryWork: (id, afterMs) => withReconnect((c) => c.retryWork(id, afterMs)),
+    cancelWork: (id, reason) => withReconnect((c) => c.cancelWork(id, reason)),
+    provideHumanInput: (workId, answersMarkdown) =>
+      withReconnect((c) => c.provideHumanInput(workId, answersMarkdown)),
+    listPlans: (filters) => withReconnect((c) => c.listPlans(filters)),
+    listProjects: (filters) => withReconnect((c) => c.listProjects(filters)),
+    listSchedules: (filters) => withReconnect((c) => c.listSchedules(filters)),
+    close: () => inner.close(),
+  };
 }
