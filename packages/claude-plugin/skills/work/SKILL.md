@@ -34,6 +34,27 @@ This rule is non-negotiable and applies to every type below.
 
    If the response is `null`, tell the user: "No pending work in the Sapling queue<scope>. Add one with /sapling:plan or /sapling:enqueue." where `<scope>` is e.g. ` for app iris` when an app filter was applied.
 
+2b. **Rename the tmux window on every meaningful status transition (when running under the Sapling TUI).** This keeps the live window name aligned with the work item's status so the TUI's dashboard, `tmux switch-client`, and tmux's own window list stay readable. The format is `work-<id>:<status>`. This is a no-op when not running inside a Sapling-managed tmux session.
+
+The helper to use everywhere this skill mutates work-item status:
+
+```bash
+sapling_rename_window() {
+  if [ -n "$SAPLING_TMUX_SESSION" ] && [ -n "$TMUX_PANE" ]; then
+    tmux rename-window -t "$TMUX_PANE" "work-$1:$2" 2>/dev/null || true
+  fi
+}
+```
+
+Call `sapling_rename_window <id> <status>` at each of these points:
+
+- Immediately after `mcp__sapling__claim_next_work` returns a non-null work item: `sapling_rename_window <id> claimed`.
+- Immediately after `mcp__sapling__request_human_input` succeeds (you are pausing on a question): `sapling_rename_window <id> awaiting_input`.
+- Immediately after `mcp__sapling__complete_work` succeeds: `sapling_rename_window <id> complete`.
+- Immediately after `mcp__sapling__fail_work` succeeds: `sapling_rename_window <id> failed`.
+
+Substitute `<id>` with the work item id and `<status>` with the literal token shown above. The runner sets `SAPLING_TMUX_SESSION` only when it spawned this agent into a tmux window; outside that environment the variable is unset and the rename is skipped. Do not warn the user if the rename fails — tmux is not a hard dependency.
+
 ### Workspace safety (non-negotiable)
 
 These invariants MUST hold for every worktree the skill creates or operates in. If any check fails, the skill MUST halt with a clear error message naming the offending value — do not silently rewrite, fall back, or relocate. They gate every subsequent step in this skill.

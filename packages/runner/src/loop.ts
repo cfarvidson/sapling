@@ -1,4 +1,4 @@
-import type { McpClient } from './mcp_client.js';
+import type { McpClient } from 'sapling-mcp-client';
 import { nagAwaitingInput } from './notifier.js';
 import type { SpawnedAgent, SpawnFn } from './spawn.js';
 

@@ -1,6 +1,7 @@
+import { spawnSync } from 'node:child_process';
 import { readFile, unlink } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { spawnAgent } from '../src/spawn.js';
+import { buildTmuxNewWindowArgs, makeTmuxSpawner, spawnAgent } from '../src/spawn.js';
 
 describe('spawnAgent', () => {
   it('spawns a child via bash -lc and exits 0 for `echo hi`', async () => {
@@ -70,4 +71,75 @@ describe('spawnAgent', () => {
     expect(stillAlive).toBe(false);
     await unlink(tmp).catch(() => undefined);
   });
+});
+
+describe('buildTmuxNewWindowArgs', () => {
+  it('produces argv with -d, -P, -F, session/window names, env, and -- before the shell', () => {
+    const args = buildTmuxNewWindowArgs({
+      sessionName: 'sapling',
+      windowName: 'spawn-1',
+      env: { SAPLING_RUNNER: '1', FOO: 'bar' },
+      command: 'echo hi',
+    });
+    expect(args).toEqual([
+      'new-window',
+      '-d',
+      '-P',
+      '-F',
+      '#{window_id}\t#{pane_pid}',
+      '-t',
+      'sapling',
+      '-n',
+      'spawn-1',
+      '-e',
+      'SAPLING_RUNNER=1',
+      '-e',
+      'FOO=bar',
+      '--',
+      'bash',
+      '-lc',
+      'echo hi',
+    ]);
+  });
+
+  it('preserves env values containing spaces and equals signs as a single -e arg', () => {
+    const args = buildTmuxNewWindowArgs({
+      sessionName: 's',
+      windowName: 'w',
+      env: { GREETING: 'hello world=!' },
+      command: 'true',
+    });
+    expect(args).toContain('GREETING=hello world=!');
+  });
+});
+
+const tmuxAvailable = (() => {
+  if (!process.env.TMUX) return false;
+  const r = spawnSync('tmux', ['display-message', '-p', '#{client_tty}'], { encoding: 'utf8' });
+  return r.status === 0;
+})();
+
+describe.skipIf(!tmuxAvailable)('makeTmuxSpawner (live tmux)', () => {
+  it('spawns a window, the pane pid exits, onExit resolves', async () => {
+    // Use the current session, picked up by tmux from $TMUX.
+    const sessionName = spawnSync('tmux', ['display-message', '-p', '#{session_name}'], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    const spawner = makeTmuxSpawner(sessionName);
+    const child = spawner('true', { ...process.env });
+    expect(child.pid).toBeGreaterThan(0);
+    await child.onExit;
+  }, 10_000);
+
+  it('kill() runs tmux kill-window and reports success on the first call', async () => {
+    const sessionName = spawnSync('tmux', ['display-message', '-p', '#{session_name}'], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    const spawner = makeTmuxSpawner(sessionName);
+    const child = spawner('sleep 30', { ...process.env });
+    // Give bash a moment to settle in the pane.
+    await new Promise((r) => setTimeout(r, 200));
+    expect(child.kill()).toBe(true);
+    await child.onExit;
+  }, 10_000);
 });

@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Enable corepack + pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build all packages
+        run: |
+          pnpm --filter sapling-mcp-client build
+          pnpm --filter mcp-server build
+          pnpm --filter sapling-runner build
+          pnpm --filter sapling-tui build
+
+      - name: mcp-server tests
+        run: pnpm --filter mcp-server test
+
+      - name: TUI tests
+        run: pnpm --filter sapling-tui test
+
+      # Spawn a detached tmux server in the background so the runner's
+      # live-tmux integration tests fire instead of skipping. The server keeps
+      # running for the duration of the job; the job runner tears it down.
+      - name: Start tmux server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          tmux -L ci new-session -d -s sapling -n ci-shell 'sleep 86400'
+          tmux -L ci list-sessions
+          # Expose $TMUX in a form the spawn tests can read. The value must
+          # be `<socket-path>,<server-pid>,<session-id>`; tmux's own format
+          # token resolves the socket path and we look up the server pid and
+          # session id via list-sessions / display-message.
+          SOCKET=$(tmux -L ci display-message -p '#{socket_path}')
+          SERVER_PID=$(tmux -L ci display-message -p '#{pid}')
+          SESSION_ID=$(tmux -L ci display-message -p '#{session_id}' | tr -d '$')
+          echo "TMUX=${SOCKET},${SERVER_PID},${SESSION_ID}" >> "$GITHUB_ENV"
+
+      - name: Verify $TMUX is set and reaches tmux
+        run: |
+          echo "TMUX=$TMUX"
+          test -n "$TMUX" || { echo 'TMUX env not set'; exit 1; }
+          tmux -L ci display-message -p '#S' >/dev/null
+
+      - name: Runner tests (with live tmux)
+        run: pnpm --filter sapling-runner test
+
+      - name: Stop tmux server
+        if: always()
+        run: tmux -L ci kill-server || true

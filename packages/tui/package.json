@@ -1,27 +1,29 @@
 {
-  "name": "sapling-runner",
+  "name": "sapling-tui",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "sapling-tui": "dist/index.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "node dist/index.js",
-    "dev": "tsx src/index.ts",
+    "dev": "tsx src/index.tsx",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ink": "^5.0.0",
+    "react": "^18.3.0",
     "sapling-mcp-client": "workspace:*"
   },
   "devDependencies": {
-    "@testcontainers/postgresql": "^10.13.0",
     "@types/node": "^22.0.0",
-    "@types/pg": "^8.11.0",
-    "pg": "^8.13.0",
-    "testcontainers": "^10.13.0",
+    "@types/react": "^18.3.0",
+    "ink-testing-library": "^4.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
