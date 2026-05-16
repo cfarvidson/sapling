@@ -3,7 +3,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { runMigrations } from '../../../mcp-server/src/migrate.js';
 import { registerAllTools } from '../../../mcp-server/src/tools/register.js';
-import { wrapMcpClient, type McpClient } from '../../src/mcp_client.js';
+import { wrapMcpClient, type McpClient } from 'sapling-mcp-client';
 import type pg from 'pg';
 
 export interface InProcessMcp {

@@ -3,9 +3,10 @@ import { dirname, resolve } from 'node:path';
 import process from 'node:process';
 import type { Writable } from 'node:stream';
 import { createLogger, type Logger } from './logger.js';
-import { createHttpMcpClient, type McpClient } from './mcp_client.js';
+import { createHttpMcpClient, type McpClient } from 'sapling-mcp-client';
 import { tick } from './loop.js';
-import { spawnAgent, type SpawnedAgent } from './spawn.js';
+import { makeTmuxSpawner, spawnAgent, type SpawnFn, type SpawnedAgent } from './spawn.js';
+import { detectForeignWindows, listSessionWindowNames } from './tmux_safety.js';
 
 interface CliArgs {
   once: boolean;
@@ -98,12 +99,46 @@ async function main(): Promise<void> {
     process.exit(0);
   };
 
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+
+  const cfg = await mcp.getRunnerConfig();
+
+  // Pick the spawner once at startup. tmux mode requires both the config
+  // toggle and an actual tmux client env (`$TMUX`). When the toggle is on but
+  // the env is missing, we fall back to the bash spawner with a log so the
+  // operator notices.
+  const inTmux = Boolean(process.env.TMUX);
+  const useTmux = cfg.use_tmux && inTmux;
+  const spawnFn: SpawnFn = useTmux ? makeTmuxSpawner(cfg.tmux_session_name) : spawnAgent;
+  if (cfg.use_tmux && !inTmux) {
+    log('tmux_disabled_no_env', { reason: 'cfg.use_tmux=true but $TMUX is unset' });
+  }
+
+  // Multi-runner safety: when the configured tmux session already has
+  // `work-<n>` windows we did not spawn, warn that another runner (or an
+  // orphan from a crashed run) is likely active. We do not abort — the cost
+  // of a stuck runner that refuses to start is higher than the cost of
+  // trampling. The operator decides whether to kill the orphans or use a
+  // different session name.
+  if (useTmux) {
+    const existing = listSessionWindowNames(cfg.tmux_session_name);
+    const foreign = detectForeignWindows(existing, []);
+    if (foreign.length > 0) {
+      log('foreign_windows_detected', {
+        session: cfg.tmux_session_name,
+        count: foreign.length,
+        names: foreign,
+      });
+    }
+  }
+
   const doTick = async (): Promise<void> => {
     if (stopping) return;
     try {
       const r = await tick({
         mcp,
-        spawn: spawnAgent,
+        spawn: spawnFn,
         env: process.env,
         running,
         log,
@@ -120,11 +155,12 @@ async function main(): Promise<void> {
     }
   };
 
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
-  process.on('SIGINT', () => void shutdown('SIGINT'));
-
-  const cfg = await mcp.getRunnerConfig();
-  log('start', { url, poll_interval_ms: cfg.poll_interval_ms, max_concurrent: cfg.max_concurrent });
+  log('start', {
+    url,
+    poll_interval_ms: cfg.poll_interval_ms,
+    max_concurrent: cfg.max_concurrent,
+    tmux: useTmux ? cfg.tmux_session_name : false,
+  });
 
   await doTick();
 

@@ -119,13 +119,25 @@ sapling/
           projects.ts           # all 9 project tools + advanceProjectAfterWorkCompletion helper
       test/                     # vitest + testcontainers
       Dockerfile
+    mcp-client/                 # sapling-mcp-client: thin HTTP MCP client shared by runner + TUI
+      src/
+        index.ts                # createHttpMcpClient, wrapMcpClient, type defs (RunnerConfig, WorkItem, Plan, Project, Schedule, Artifact, …) plus listWork/listPlans/listProjects/listSchedules/listArtifacts and the work-mutation methods (unblock/retry/cancel/provide_human_input)
     runner/                     # sapling-runner: polling daemon
       src/
-        index.ts                # CLI args, signals, tick interval
+        index.ts                # CLI args, signals, tick interval, picks spawn fn (bash vs tmux), startup foreign-window warning
         loop.ts                 # tick(): reap → read config → spawn up to max_concurrent
-        spawn.ts                # bash -lc <agent_command>
-        mcp_client.ts           # thin HTTP MCP client (calls reap_stuck_claims, list_work, get_runner_config)
+        spawn.ts                # spawnAgent (bash -lc) and makeTmuxSpawner (tmux new-window)
+        tmux_safety.ts          # detectForeignWindows / listSessionWindowNames helpers
       test/
+    tui/                        # sapling-tui: Ink-based live dashboard for the queue
+      src/
+        index.tsx               # CLI entry: connect MCP, render <App>
+        App.tsx                 # tabs (work / plans / projects / schedules), filter, help, prompt + confirm modals
+        tabs/                   # PlansTab.tsx, ProjectsTab.tsx, SchedulesTab.tsx (read-only)
+        components/             # PromptInput.tsx, HelpOverlay.tsx
+        editor.ts               # $EDITOR handoff for cancel/provide_human_input
+        tmux.ts                 # list-windows / switch-client / findWorkWindowName (matches work-<id> and work-<id>:<status>)
+      test/                     # ink-testing-library + fake McpClient + fake tmux
     claude-plugin/              # MCP wiring + slash-command skills
       .mcp.json                 # default Claude Code MCP config (http://localhost:3333/mcp)
       skills/                   # context, enqueue, human, learn, plan, project, queue, rules, status, teams, work
@@ -159,6 +171,7 @@ Authoritative source: `packages/mcp-server/src/schema/*.sql`. The migrations app
 | `011_schedules.sql`             | Creates `schedules`, `schedule_runs`; enums `schedule_source` / `schedule_overlap` / `schedule_run_status`. Adds `runner_config.github_token` (nullable) and `runner_config.github_default_visibility` (default `'all'`).                                                                                                                           |
 | `012_dod_fix_loop.sql`          | Adds `projects.dod_cycle_count` (INT NOT NULL DEFAULT 0) and `runner_config.max_dod_fix_cycles` (INT NOT NULL DEFAULT 3).                                                                                                                                                                                                                           |
 | `013_seed_ce_teams.sql`         | **Data-only.** Seeds two global teams (`sapling-code-review`, `sapling-plan-stress-test`) whose roles point at compound-engineering specialist `subagent_type`s, plus the matching global `team_defaults` for `work_type='review'` and `'plan'`. All inserts are `ON CONFLICT DO NOTHING` — user edits are preserved. See [§ 10. Teams](#10-teams). |
+| `014_runner_tmux.sql`           | Adds `use_tmux` (BOOLEAN NOT NULL DEFAULT true) and `tmux_session_name` (TEXT NOT NULL DEFAULT `'sapling'`) to `runner_config`. Enables the tmux-per-agent spawn mode used by the TUI. The runner falls back to the legacy `bash -lc` spawner whenever `$TMUX` is unset at startup, so `make runner` outside tmux is unaffected.                    |
 
 ### Tables
 
@@ -291,10 +304,10 @@ All inputs validated with `zod`. All success responses are JSON in a `text` cont
 
 ### Runner config (`tools/runner_config.ts`) — 2 tools
 
-| Tool                                                                                                                                                                                                                                                     | Purpose                                                               |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `get_runner_config()`                                                                                                                                                                                                                                    | Read the singleton config row.                                        |
-| `update_runner_config({ agent_command?, max_concurrent?, poll_interval_ms?, claim_ttl_ms?, max_claim_attempts?, ntfy_url?, awaiting_input_nag_age_ms?, awaiting_input_nag_repeat_ms?, github_token?, github_default_visibility?, max_dod_fix_cycles? })` | Partial upsert. `ntfy_url` and `github_token` accept `null` to clear. |
+| Tool                                                                                                                                                                                                                                                                                    | Purpose                                                               |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `get_runner_config()`                                                                                                                                                                                                                                                                   | Read the singleton config row.                                        |
+| `update_runner_config({ agent_command?, max_concurrent?, poll_interval_ms?, claim_ttl_ms?, max_claim_attempts?, ntfy_url?, awaiting_input_nag_age_ms?, awaiting_input_nag_repeat_ms?, github_token?, github_default_visibility?, max_dod_fix_cycles?, use_tmux?, tmux_session_name? })` | Partial upsert. `ntfy_url` and `github_token` accept `null` to clear. |
 
 ### Human-in-the-loop (`tools/human_input.ts`) — 2 tools
 
@@ -654,6 +667,8 @@ The notifier's per-item last-notified state is in-memory only — a runner resta
 - `ntfy_url` — optional ntfy topic URL for `awaiting_input` notifications. `NULL` disables notifications.
 - `awaiting_input_nag_age_ms` — minimum age before an `awaiting_input` item is nagged. Defaults to `3600000` (1 h).
 - `awaiting_input_nag_repeat_ms` — minimum interval between repeat nags for the same item. Defaults to `21600000` (6 h).
+- `use_tmux` — defaults to `true`. When the runner starts inside a tmux client (`$TMUX` set) and this flag is true, agents are spawned as new windows in the configured session (see `tmux_session_name`); otherwise the runner falls back to the legacy `bash -lc` spawner.
+- `tmux_session_name` — defaults to `"sapling"`. The tmux session the runner targets for `new-window` and the TUI targets for `switch-client`. The `make tui` target bootstraps this session.
 
 ### Logging
 
@@ -713,6 +728,8 @@ Marketplace entry lives at `.claude-plugin/marketplace.json` and is installed vi
 | `github_token`                                                          | `runner_config` table    | _(unset)_                                                   | PAT used for `github_org` schedules. Redacted on read.                                     |
 | `github_default_visibility`                                             | `runner_config` table    | `'all'`                                                     | One of `'all' \| 'public' \| 'private'`. Filters which repos a `github_org` schedule sees. |
 | `max_dod_fix_cycles`                                                    | `runner_config` table    | `3`                                                         | Number of DoD fix cycles allowed before a project is auto-blocked.                         |
+| `use_tmux`                                                              | `runner_config` table    | `true`                                                      | Spawn agents into tmux windows when `$TMUX` is set; falls back to `bash -lc` otherwise.    |
+| `tmux_session_name`                                                     | `runner_config` table    | `'sapling'`                                                 | Tmux session the runner targets for `new-window` and the TUI targets for `switch-client`.  |
 
 **Server env vars:** `SCHEDULER_TICK_MS` (positive int, default `10000`) controls the in-process scheduler tick cadence.
 

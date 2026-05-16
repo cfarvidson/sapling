@@ -56,7 +56,27 @@ make logs    # tail mcp-server logs
 make psql    # open a psql shell against the running container (also accepts piped SQL via stdin)
 make test    # run the test suite (vitest + testcontainers)
 make nuke    # stop AND drop data volume + ./data/postgres (5s confirmation)
+make runner  # start the runner in the current terminal (legacy, no tmux)
+make tui     # boot the runner + TUI inside a tmux session (recommended)
 ```
+
+## Live dashboard (TUI)
+
+`make tui` boots a tmux session named `sapling` with the runner in one window and a live dashboard in another, then attaches. Each spawned agent gets its own tmux window (`work-<id>:<status>`) so output stops interleaving and you can jump to any running agent with a single keystroke.
+
+```text
+┌─ Sapling ─────────────────────────────────────┐
+│ claimed (1)   ▸ #42 build search index      ● │   detail: prompt, branch, artifacts,
+│ pending (3)     #45 fix import path           │   live tmux target, attempt count
+│ awaiting_input(1) #38 ask user…              │
+│ failed (1)      #29 dod fix loop              │
+│ 1/2/3/4 tabs · ↑↓ nav · → attach · ? help     │
+└───────────────────────────────────────────────┘
+```
+
+Keys: `↑↓/jk` navigate, `→/enter` attach (claimed items), `u/r/c` unblock/retry/cancel, `i` answer `awaiting_input`, `/` filter, `?` help, `1/2/3/4` switch between work / plans / projects / schedules, `q` quit. Coming back from an agent's window is the standard tmux prefix (default `Ctrl-b 1`).
+
+`make runner` still works as the no-tmux escape hatch for CI or anyone who doesn't want the multiplexer. See [the design doc](docs/superpowers/specs/2026-05-16-sapling-tui-design.md) for the rationale.
 
 ## Updating images & migrating
 

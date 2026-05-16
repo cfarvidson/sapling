@@ -43,7 +43,6 @@ export interface SchedulerHandle {
 }
 
 export function startScheduler(db: Db, log: pino.Logger, intervalMs: number): SchedulerHandle {
-  let timer: NodeJS.Timeout | undefined;
   let running = false;
   let stopping = false;
 
@@ -59,13 +58,13 @@ export function startScheduler(db: Db, log: pino.Logger, intervalMs: number): Sc
     }
   };
 
-  timer = setInterval(runOnce, intervalMs);
+  const timer: NodeJS.Timeout = setInterval(runOnce, intervalMs);
   void runOnce();
 
   return {
     stop: async () => {
       stopping = true;
-      if (timer) clearInterval(timer);
+      clearInterval(timer);
       while (running) await new Promise((r) => setTimeout(r, 25));
     },
   };

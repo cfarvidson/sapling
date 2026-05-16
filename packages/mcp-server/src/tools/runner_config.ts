@@ -43,6 +43,8 @@ export function registerRunnerConfig(server: McpServer, db: Db): void {
         github_token: z.string().min(1).nullable().optional(),
         github_default_visibility: z.enum(['all', 'public', 'private']).optional(),
         max_dod_fix_cycles: PositiveInt.optional(),
+        use_tmux: z.boolean().optional(),
+        tmux_session_name: z.string().min(1).optional(),
       },
     },
     async (input) => {
@@ -60,6 +62,8 @@ export function registerRunnerConfig(server: McpServer, db: Db): void {
         'github_token',
         'github_default_visibility',
         'max_dod_fix_cycles',
+        'use_tmux',
+        'tmux_session_name',
       ];
       for (const k of fields) {
         const v = input[k];
