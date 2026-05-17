@@ -33,6 +33,9 @@ jobs:
           pnpm --filter sapling-runner build
           pnpm --filter sapling-tui build
 
+      - name: mcp-client tests
+        run: pnpm --filter sapling-mcp-client test
+
       - name: mcp-server tests
         run: pnpm --filter mcp-server test
 
